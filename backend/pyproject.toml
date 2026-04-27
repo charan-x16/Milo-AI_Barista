@@ -1,0 +1,31 @@
+[project]
+name = "backend"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "agentscope>=1.0",
+    "fastapi>=0.115",
+    "fastembed>=0.5",
+    "pydantic-settings>=2",
+    "qdrant-client>=1.13",
+    "uvicorn>=0.30",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[dependency-groups]
+dev = [
+    "pydantic>=2",
+    "pytest>=8",
+    "pytest-asyncio>=0.23",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/cafe"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
