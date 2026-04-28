@@ -1,4 +1,4 @@
-"""Customer Support specialist - handles cafe FAQ questions."""
+"""Customer Support specialist - handles cafe support RAG questions."""
 
 from pathlib import Path
 
@@ -10,7 +10,7 @@ from agentscope.tool import Toolkit, view_text_file
 from cafe.agents.memory import make_multi_agent_formatter
 from cafe.agents.prompts import CUSTOMER_SUPPORT_PROMPT
 from cafe.config import get_settings
-from cafe.tools.support_tools import faq_lookup, search_support_knowledge
+from cafe.tools.support_tools import search_support_knowledge
 
 
 _SKILL_DIR = Path(__file__).resolve().parents[2] / "skills" / "support_playbook"
@@ -19,7 +19,6 @@ _SKILL_DIR = Path(__file__).resolve().parents[2] / "skills" / "support_playbook"
 def _make_toolkit() -> Toolkit:
     tk = Toolkit()
     tk.register_tool_function(search_support_knowledge)
-    tk.register_tool_function(faq_lookup)
     tk.register_tool_function(view_text_file)
     tk.register_agent_skill(str(_SKILL_DIR))
     return tk

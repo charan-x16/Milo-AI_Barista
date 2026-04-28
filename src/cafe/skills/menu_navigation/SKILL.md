@@ -1,18 +1,55 @@
 ---
 name: menu_navigation
-description: Guidance for searching and filtering the cafe menu by budget, dietary tags, and category.
+description: RAG-grounded menu search guidance for budgets, dietary needs, categories, recommendations, and cart handoff.
 ---
 
 # Menu Navigation
 
-When a user gives a budget like "under ₹150":
-1. Call search_products with their broader query first.
-2. Filter the results yourself by `price_inr <= budget`.
-3. Mention the budget in your reply ("Under ₹150, I have…").
+Use this skill whenever the Product Search agent answers menu questions. The
+menu RAG collection is the only source of truth available to this agent.
 
-When a user asks for "vegan" or "vegetarian":
-- Look at the `tags` field. "vegetarian" tag = safe vegetarian.
-- "vegan" tag isn't on most items — say "ask for oat/soy milk substitution"
-  if they want a vegan version of a milk drink.
+## Grounding
+- Use `search_product_knowledge` for descriptions, add-ons, serving size,
+  dietary notes, price-range lists, cheapest/most expensive queries, and
+  recommendations.
+- Do not infer ingredients, caffeine, allergens, vegan status, or add-ons from
+  general knowledge. Only state what the menu RAG or tools provide.
+- If the retrieved menu text does not contain a requested detail, say that the
+  detail was not found in the retrieved context.
 
-Categories: coffee, tea, food, dessert.
+## Budget requests
+When a user gives a budget like "under INR 150":
+1. Retrieve relevant menu knowledge with `search_product_knowledge`, because
+   the menu docs include price quick-reference sections.
+2. Filter only by confirmed prices. Do not include items with unknown prices.
+3. Mention the budget naturally, for example: "Under INR 150, I found..."
+
+## Dietary requests
+When a user asks for vegan or vegetarian items:
+- Use retrieved dietary tags or structured tags.
+- "Vegetarian" means the item is marked vegetarian in the available data.
+- "Vegan" is only confirmed when the menu or tool result says vegan.
+- Milk-based coffee drinks may be vegan-adaptable only when retrieved menu
+  knowledge confirms a plant-based milk upgrade. Mention any surcharge only
+  when retrieved.
+- For severe allergies or strict dietary needs, avoid guarantees and route
+  policy-level safety questions to Customer Support.
+
+## Categories
+Common structured categories include coffee, tea, food, and dessert. The RAG
+menu also contains richer groups such as cold brew, cold coffee, iced tea,
+mocktail, shake, herbal tea, fries, wraps, sandwiches, pasta, pizza, salads,
+and appetizers. Use the user's wording, then map it to retrieved categories.
+
+## Recommendations
+- Recommend two to four options unless the user asks for more.
+- Explain the reason briefly using retrieved facts: price, tag, flavor
+  description, serving style, or category.
+- If the user asks for "best" without criteria, choose a helpful variety and
+  ask what they prefer next.
+
+## Cart handoff
+When the user wants to add something to cart, include the item id, item name,
+quantity if known, and any customizations only if the RAG result contains the
+item id. If the item id is not found in retrieved context, say so clearly so
+the Orchestrator can ask for clarification or route accordingly.
