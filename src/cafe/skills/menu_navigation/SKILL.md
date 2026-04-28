@@ -6,14 +6,22 @@ description: RAG-grounded menu search guidance for budgets, dietary needs, categ
 # Menu Navigation
 
 Use this skill whenever the Product Search agent answers menu questions. The
-menu RAG collection is the only source of truth available to this agent.
+menu and menu-attributes RAG collections are the only sources of truth
+available to this agent.
 
 ## Grounding
 - Use `search_product_knowledge` for descriptions, add-ons, serving size,
   dietary notes, price-range lists, cheapest/most expensive queries, and
   recommendations.
+- Use `search_menu_attribute_knowledge` for taste, ingredients, allergens,
+  sweetness, spice level, caffeine, dairy/milk, body, customizations, avoid-if
+  notes, and good-for matching.
+- Use `search_product_and_attribute_knowledge` for personalized
+  recommendations so menu knowledge and attribute knowledge are retrieved in
+  parallel.
 - Do not infer ingredients, caffeine, allergens, vegan status, or add-ons from
-  general knowledge. Only state what the menu RAG or tools provide.
+  general knowledge. Only state what the menu RAG, attribute RAG, or tools
+  provide.
 - If the retrieved menu text does not contain a requested detail, say that the
   detail was not found in the retrieved context.
 
@@ -34,6 +42,19 @@ When a user asks for vegan or vegetarian items:
   when retrieved.
 - For severe allergies or strict dietary needs, avoid guarantees and route
   policy-level safety questions to Customer Support.
+
+## Ingredient and preference requests
+When a user asks for "something sweet", "not too heavy", "no milk", "less
+caffeine", "spicy", "good after lunch", "avoid chocolate", or similar
+preference matching:
+- Retrieve normal menu facts with `search_product_knowledge`.
+- Retrieve attribute facts with `search_menu_attribute_knowledge`.
+- Prefer `search_product_and_attribute_knowledge` when both are needed in the
+  same answer.
+- Prefer items whose retrieved attributes directly match the request.
+- Mention caveats from "Avoid If" or "Not Enough Data" when relevant.
+- Do not claim medical safety, allergen safety, low-sugar, or low-calorie status
+  unless the retrieved data explicitly supports it.
 
 ## Categories
 Common structured categories include coffee, tea, food, and dessert. The RAG

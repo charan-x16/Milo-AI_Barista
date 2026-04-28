@@ -1,10 +1,16 @@
 import json
+from types import SimpleNamespace
 
 import pytest
 
 from cafe.tools.cart_tools import add_to_cart, view_cart
 from cafe.tools.order_tools import cancel_order, place_order
-from cafe.tools.product_tools import get_product_details, search_products
+from cafe.tools import product_tools
+from cafe.tools.product_tools import (
+    get_product_details,
+    search_product_and_attribute_knowledge,
+    search_products,
+)
 from cafe.tools.support_tools import faq_lookup
 
 
@@ -33,6 +39,29 @@ async def test_get_product_details_unknown_returns_failure(store):
     data = payload(await get_product_details("nope"))
 
     assert data["success"] is False
+
+
+@pytest.mark.asyncio
+async def test_combined_product_attribute_search_returns_both_sources(monkeypatch):
+    def fake_retrieve(source_key: str, query: str, max_results: int):
+        return [
+            SimpleNamespace(
+                text=f"{source_key}: {query}",
+                score=0.9,
+                source=f"{source_key}.md",
+                chunk_index=max_results,
+            )
+        ]
+
+    monkeypatch.setattr(product_tools, "_retrieve_knowledge_source", fake_retrieve)
+
+    data = payload(await search_product_and_attribute_knowledge("sweet light drink", max_results=2))
+
+    assert data["success"] is True
+    assert data["data"]["menu_count"] == 1
+    assert data["data"]["attribute_count"] == 1
+    assert data["data"]["menu_results"][0]["text"] == "product: sweet light drink"
+    assert data["data"]["attribute_results"][0]["text"] == "menu_attributes: sweet light drink"
 
 
 @pytest.mark.asyncio

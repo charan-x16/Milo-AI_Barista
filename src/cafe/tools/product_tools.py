@@ -1,11 +1,30 @@
+import asyncio
+
 from agentscope.tool import ToolResponse
 
 from cafe.core.state import get_store
 from cafe.core.validator import ValidationError
 from cafe.models.tool_io import ToolResult
 from cafe.services import menu_service
-from cafe.services.rag_service import build_rag_service, rag_sources
+from cafe.services.rag_service import RagHit, build_rag_service, rag_sources
 from cafe.tools._wrap import wrap
+
+
+def _serialize_hits(hits: list[RagHit]) -> list[dict[str, object]]:
+    return [
+        {
+            "text": hit.text,
+            "score": hit.score,
+            "source": hit.source,
+            "chunk_index": hit.chunk_index,
+        }
+        for hit in hits
+    ]
+
+
+def _retrieve_knowledge_source(source_key: str, query: str, max_results: int) -> list[RagHit]:
+    source = rag_sources()[source_key]
+    return build_rag_service().retrieve(source.collection_name, query, limit=max_results)
 
 
 async def search_products(query: str, max_results: int = 5) -> ToolResponse:
@@ -65,20 +84,56 @@ async def search_product_knowledge(query: str, max_results: int = 5) -> ToolResp
         search_product_knowledge(query="vegan drinks under 300", max_results=3)
     """
     try:
-        source = rag_sources()["product"]
-        hits = build_rag_service().retrieve(source.collection_name, query, limit=max_results)
+        hits = _retrieve_knowledge_source("product", query, max_results)
+        return wrap(ToolResult.ok(results=_serialize_hits(hits), count=len(hits)))
+    except Exception as e:
+        return wrap(ToolResult.fail(f"RAG retrieval error: {e}"))
+
+
+async def search_menu_attribute_knowledge(query: str, max_results: int = 5) -> ToolResponse:
+    """Retrieve taste, ingredient, allergen, and suitability attributes.
+
+    Args:
+        query: Natural-language menu attribute question.
+        max_results: Maximum number of chunks to return.
+
+    Returns:
+        ToolResult.ok(results=..., count=...) or ToolResult.fail(error=...).
+
+    Example:
+        search_menu_attribute_knowledge(query="sweet light drink without milk", max_results=3)
+    """
+    try:
+        hits = _retrieve_knowledge_source("menu_attributes", query, max_results)
+        return wrap(ToolResult.ok(results=_serialize_hits(hits), count=len(hits)))
+    except Exception as e:
+        return wrap(ToolResult.fail(f"RAG retrieval error: {e}"))
+
+
+async def search_product_and_attribute_knowledge(query: str, max_results: int = 5) -> ToolResponse:
+    """Retrieve menu facts and menu attributes in parallel.
+
+    Args:
+        query: Natural-language product recommendation or matching question.
+        max_results: Maximum chunks to return from each collection.
+
+    Returns:
+        ToolResult.ok(menu_results=..., attribute_results=...) or ToolResult.fail(error=...).
+
+    Example:
+        search_product_and_attribute_knowledge(query="sweet but light cold drink", max_results=3)
+    """
+    try:
+        menu_hits, attribute_hits = await asyncio.gather(
+            asyncio.to_thread(_retrieve_knowledge_source, "product", query, max_results),
+            asyncio.to_thread(_retrieve_knowledge_source, "menu_attributes", query, max_results),
+        )
         return wrap(
             ToolResult.ok(
-                results=[
-                    {
-                        "text": hit.text,
-                        "score": hit.score,
-                        "source": hit.source,
-                        "chunk_index": hit.chunk_index,
-                    }
-                    for hit in hits
-                ],
-                count=len(hits),
+                menu_results=_serialize_hits(menu_hits),
+                menu_count=len(menu_hits),
+                attribute_results=_serialize_hits(attribute_hits),
+                attribute_count=len(attribute_hits),
             )
         )
     except Exception as e:

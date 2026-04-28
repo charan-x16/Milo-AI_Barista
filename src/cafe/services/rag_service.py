@@ -63,6 +63,11 @@ def rag_sources(settings: Settings | None = None) -> dict[str, RagSource]:
             collection_name=s.qdrant_product_collection,
             path=DOCS_DIR / "BTB_Menu_Enhanced.md",
         ),
+        "menu_attributes": RagSource(
+            agent="product",
+            collection_name=s.qdrant_menu_attributes_collection,
+            path=DOCS_DIR / "BTB_Menu_Attributes.md",
+        ),
         "support": RagSource(
             agent="support",
             collection_name=s.qdrant_support_collection,

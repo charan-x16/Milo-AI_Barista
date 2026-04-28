@@ -18,6 +18,9 @@ class KeywordEmbedder:
         "wifi",
         "vegan",
         "oat",
+        "caffeine",
+        "sweetness",
+        "milk",
     ]
     dimension = len(vocabulary) + 1
 
@@ -46,15 +49,16 @@ def test_indexes_product_doc_into_product_collection():
     assert "coffee" in " ".join(hit.text for hit in hits).casefold()
 
 
-def test_creates_two_agent_collections():
+def test_creates_agent_collections():
     sources = rag_sources()
     client = QdrantClient(":memory:")
     service = RagService(client, KeywordEmbedder())
 
     created = service.create_collections(sources)
 
-    assert created == {"product": True, "support": True}
+    assert created == {"product": True, "menu_attributes": True, "support": True}
     assert client.collection_exists(sources["product"].collection_name)
+    assert client.collection_exists(sources["menu_attributes"].collection_name)
     assert client.collection_exists(sources["support"].collection_name)
 
 
@@ -69,3 +73,16 @@ def test_indexes_support_doc_into_support_collection():
     assert hits
     assert hits[0].source == "BTB_Company_Policies.md"
     assert "refund" in " ".join(hit.text for hit in hits).casefold()
+
+
+def test_indexes_menu_attributes_doc_into_attributes_collection():
+    source = rag_sources()["menu_attributes"]
+    service = RagService(QdrantClient(":memory:"), KeywordEmbedder())
+
+    count = service.index_source(source)
+    hits = service.retrieve(source.collection_name, "caffeine sweetness milk", limit=3)
+
+    assert count > 0
+    assert hits
+    assert hits[0].source == "BTB_Menu_Attributes.md"
+    assert "caffeine" in " ".join(hit.text for hit in hits).casefold()

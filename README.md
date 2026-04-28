@@ -79,7 +79,9 @@ The API will be available at `http://127.0.0.1:8000`.
 
 ## RAG Indexing
 
-The Product Search Agent retrieves from `src/cafe/Docs/BTB_Menu_Enhanced.md`.
+The Product Search Agent retrieves core menu facts from
+`src/cafe/Docs/BTB_Menu_Enhanced.md` and taste/ingredient/allergen attributes
+from `src/cafe/Docs/BTB_Menu_Attributes.md`.
 The Customer Support Agent retrieves from `src/cafe/Docs/BTB_Company_Policies.md`.
 Each document is indexed into its own Qdrant collection. Embeddings use
 FastEmbed with `BAAI/bge-small-en-v1.5` by default.
@@ -97,6 +99,7 @@ Configure Qdrant and embeddings through `.env`:
 ```bash
 QDRANT_URL=http://localhost:6333
 QDRANT_PRODUCT_COLLECTION=btb_product_menu
+QDRANT_MENU_ATTRIBUTES_COLLECTION=btb_menu_attributes
 QDRANT_SUPPORT_COLLECTION=btb_company_policies
 EMBEDDING_MODEL=BAAI/bge-small-en-v1.5
 EMBEDDING_DIMENSIONS=384

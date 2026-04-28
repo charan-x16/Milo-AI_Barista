@@ -13,6 +13,7 @@ class Settings(BaseSettings):
     qdrant_url: str = "http://localhost:6333"
     qdrant_api_key: str = ""
     qdrant_product_collection: str = "btb_product_menu"
+    qdrant_menu_attributes_collection: str = "btb_menu_attributes"
     qdrant_support_collection: str = "btb_company_policies"
     log_level: str = "INFO"
     memory_max_prompt_tokens: int = 90000
