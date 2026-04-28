@@ -1,11 +1,11 @@
 """The supervisor agent. Tools are the four specialists."""
 
 from agentscope.agent import ReActAgent
-from agentscope.formatter import OpenAIChatFormatter
 from agentscope.memory import InMemoryMemory
 from agentscope.model import OpenAIChatModel
 from agentscope.tool import Toolkit
 
+from cafe.agents.memory import make_chat_formatter, make_compression_config
 from cafe.agents.prompts import ORCHESTRATOR_PROMPT
 from cafe.agents.specialist_tools import (
     ask_cart_agent,
@@ -37,8 +37,9 @@ def make_orchestrator() -> ReActAgent:
             api_key=s.openai_api_key,
             stream=False,
         ),
-        formatter=OpenAIChatFormatter(),
+        formatter=make_chat_formatter(s),
         toolkit=_make_toolkit(),
         memory=InMemoryMemory(),
         max_iters=10,
+        compression_config=make_compression_config(s),
     )

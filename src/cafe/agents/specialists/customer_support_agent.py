@@ -3,11 +3,11 @@
 from pathlib import Path
 
 from agentscope.agent import ReActAgent
-from agentscope.formatter import OpenAIMultiAgentFormatter
 from agentscope.memory import InMemoryMemory
 from agentscope.model import OpenAIChatModel
 from agentscope.tool import Toolkit, view_text_file
 
+from cafe.agents.memory import make_multi_agent_formatter
 from cafe.agents.prompts import CUSTOMER_SUPPORT_PROMPT
 from cafe.config import get_settings
 from cafe.tools.support_tools import faq_lookup, search_support_knowledge
@@ -35,7 +35,7 @@ def make_customer_support_agent() -> ReActAgent:
             api_key=s.openai_api_key,
             stream=False,
         ),
-        formatter=OpenAIMultiAgentFormatter(),
+        formatter=make_multi_agent_formatter(s),
         toolkit=_make_toolkit(),
         memory=InMemoryMemory(),
         max_iters=6,

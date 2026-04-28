@@ -7,13 +7,16 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import RedirectResponse
 
 from cafe import __version__
 from cafe.agents.session_manager import get_session_manager
 from cafe.agents.specialist_tools import reset_specialists
+from cafe.api.debug import router as debug_router
 from cafe.api.schemas import ChatRequest, ChatResponse
 from cafe.config import get_settings
 from cafe.core.control_loop import run_turn
+from cafe.core.debug_trace import get_debug_trace_store
 from cafe.core.state import get_store, reset_store
 
 
@@ -36,6 +39,12 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+app.include_router(debug_router)
+
+
+@app.get("/", include_in_schema=False)
+async def root():
+    return RedirectResponse(url="/debug/flow")
 
 
 @app.middleware("http")
@@ -100,4 +109,5 @@ async def admin_reset():
     get_store()
     reset_specialists()
     get_session_manager().reset()
+    get_debug_trace_store().reset()
     return {"status": "reset"}

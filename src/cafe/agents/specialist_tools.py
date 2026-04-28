@@ -1,6 +1,7 @@
 """Wraps each specialist ReActAgent as a callable tool function.
 
-The Orchestrator's toolkit is built from these.
+The Orchestrator's toolkit is built from these. Specialists are short-lived
+because cart/order state lives in StateStore, not in specialist chat memory.
 """
 
 from agentscope.message import Msg, TextBlock
@@ -12,14 +13,8 @@ from cafe.agents.specialists.order_management_agent import make_order_management
 from cafe.agents.specialists.product_search_agent import make_product_search_agent
 
 
-# Specialists are constructed lazily and cached per-process.
+# Kept for the reset helper/tests. Runtime specialist agents are short-lived.
 _AGENTS: dict[str, object] = {}
-
-
-def _get(name, factory):
-    if name not in _AGENTS:
-        _AGENTS[name] = factory()
-    return _AGENTS[name]
 
 
 async def _ask(agent, query: str) -> ToolResponse:
@@ -53,7 +48,7 @@ async def ask_product_agent(query: str) -> ToolResponse:
     Example:
         ask_product_agent(query="What hot drinks under ₹100 do you have?")
     """
-    return await _ask(_get("product", make_product_search_agent), query)
+    return await _ask(make_product_search_agent(), query)
 
 
 async def ask_cart_agent(query: str) -> ToolResponse:
@@ -69,7 +64,7 @@ async def ask_cart_agent(query: str) -> ToolResponse:
     Example:
         ask_cart_agent(query="[session_id=s1] Show my cart")
     """
-    return await _ask(_get("cart", make_cart_management_agent), query)
+    return await _ask(make_cart_management_agent(), query)
 
 
 async def ask_order_agent(query: str) -> ToolResponse:
@@ -84,7 +79,7 @@ async def ask_order_agent(query: str) -> ToolResponse:
     Example:
         ask_order_agent(query="[session_id=s1] Place the order, budget ₹300")
     """
-    return await _ask(_get("order", make_order_management_agent), query)
+    return await _ask(make_order_management_agent(), query)
 
 
 async def ask_support_agent(query: str) -> ToolResponse:
@@ -99,7 +94,7 @@ async def ask_support_agent(query: str) -> ToolResponse:
     Example:
         ask_support_agent(query="What are your hours?")
     """
-    return await _ask(_get("support", make_customer_support_agent), query)
+    return await _ask(make_customer_support_agent(), query)
 
 
 def reset_specialists() -> None:

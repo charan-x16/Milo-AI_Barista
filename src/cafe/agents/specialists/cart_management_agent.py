@@ -3,11 +3,11 @@
 from pathlib import Path
 
 from agentscope.agent import ReActAgent
-from agentscope.formatter import OpenAIMultiAgentFormatter
 from agentscope.memory import InMemoryMemory
 from agentscope.model import OpenAIChatModel
 from agentscope.tool import Toolkit, view_text_file
 
+from cafe.agents.memory import make_multi_agent_formatter
 from cafe.agents.prompts import CART_MANAGEMENT_PROMPT
 from cafe.config import get_settings
 from cafe.tools.cart_tools import add_to_cart, clear_cart, remove_from_cart, view_cart
@@ -37,7 +37,7 @@ def make_cart_management_agent() -> ReActAgent:
             api_key=s.openai_api_key,
             stream=False,
         ),
-        formatter=OpenAIMultiAgentFormatter(),
+        formatter=make_multi_agent_formatter(s),
         toolkit=_make_toolkit(),
         memory=InMemoryMemory(),
         max_iters=6,

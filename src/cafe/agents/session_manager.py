@@ -29,6 +29,10 @@ class SessionManager:
             else:
                 self._agents.pop(session_id, None)
 
+    def session_ids(self) -> list[str]:
+        with self._lock:
+            return sorted(self._agents.keys())
+
 
 _mgr: SessionManager | None = None
 
