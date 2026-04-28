@@ -69,7 +69,7 @@ src/cafe/core/state.py
 
 ```bash
 cp .env.example .env
-# Set OPENAI_API_KEY in .env
+# Set LLM_PROVIDER, LLM_MODEL, and LLM_API_KEY in .env
 
 uv sync
 uv run uvicorn cafe.api.main:app --reload
@@ -97,6 +97,10 @@ uv run python scripts/index_rag.py
 Configure Qdrant and embeddings through `.env`:
 
 ```bash
+LLM_PROVIDER=openai
+LLM_MODEL=gpt-4o-mini
+LLM_API_KEY=
+
 QDRANT_URL=http://localhost:6333
 QDRANT_PRODUCT_COLLECTION=btb_product_menu
 QDRANT_MENU_ATTRIBUTES_COLLECTION=btb_menu_attributes
@@ -162,7 +166,7 @@ All tests, including the live LLM end-to-end test:
 uv run pytest -v
 ```
 
-The full suite needs `OPENAI_API_KEY` for `tests/test_api.py::test_chat_end_to_end`.
+The full suite needs `LLM_API_KEY` for `tests/test_api.py::test_chat_end_to_end`.
 
 ## Phase 2 (TODO)
 

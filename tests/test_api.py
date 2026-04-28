@@ -39,7 +39,10 @@ def test_chat_validation(client):
     assert response.status_code == 422
 
 
-@pytest.mark.skipif(not os.getenv("OPENAI_API_KEY"), reason="needs OPENAI_API_KEY")
+@pytest.mark.skipif(
+    not (os.getenv("LLM_API_KEY") or os.getenv("OPENAI_API_KEY")),
+    reason="needs LLM_API_KEY or OPENAI_API_KEY",
+)
 def test_chat_end_to_end(client):
     sid = client.post("/sessions").json()["session_id"]
     response = client.post(

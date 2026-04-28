@@ -10,6 +10,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import RedirectResponse
 
 from cafe import __version__
+from cafe.agents.llm import normalized_provider
 from cafe.agents.session_manager import get_session_manager
 from cafe.agents.specialist_tools import reset_specialists
 from cafe.api.debug import router as debug_router
@@ -28,7 +29,7 @@ async def lifespan(app: FastAPI):
     s = get_settings()
     logging.basicConfig(level=s.log_level)
     get_store()
-    log.info("Milo Barista ready (model=%s)", s.openai_model)
+    log.info("Milo Barista ready (provider=%s model=%s)", normalized_provider(s), s.openai_model)
     yield
 
 

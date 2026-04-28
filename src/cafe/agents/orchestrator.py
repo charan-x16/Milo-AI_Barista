@@ -2,9 +2,9 @@
 
 from agentscope.agent import ReActAgent
 from agentscope.memory import InMemoryMemory
-from agentscope.model import OpenAIChatModel
 from agentscope.tool import Toolkit
 
+from cafe.agents.llm import make_chat_model
 from cafe.agents.memory import make_chat_formatter, make_compression_config
 from cafe.agents.prompts import ORCHESTRATOR_PROMPT
 from cafe.agents.specialist_tools import (
@@ -27,16 +27,10 @@ def _make_toolkit() -> Toolkit:
 
 def make_orchestrator() -> ReActAgent:
     s = get_settings()
-    if not s.openai_api_key:
-        raise RuntimeError("OPENAI_API_KEY not set. Copy .env.example to .env.")
     return ReActAgent(
         name="Orchestrator",
         sys_prompt=ORCHESTRATOR_PROMPT,
-        model=OpenAIChatModel(
-            model_name=s.openai_model,
-            api_key=s.openai_api_key,
-            stream=False,
-        ),
+        model=make_chat_model(s),
         formatter=make_chat_formatter(s),
         toolkit=_make_toolkit(),
         memory=InMemoryMemory(),

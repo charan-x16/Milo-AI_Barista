@@ -4,9 +4,9 @@ from pathlib import Path
 
 from agentscope.agent import ReActAgent
 from agentscope.memory import InMemoryMemory
-from agentscope.model import OpenAIChatModel
 from agentscope.tool import Toolkit, view_text_file
 
+from cafe.agents.llm import make_chat_model
 from cafe.agents.memory import make_multi_agent_formatter
 from cafe.agents.prompts import ORDER_MANAGEMENT_PROMPT
 from cafe.config import get_settings
@@ -31,11 +31,7 @@ def make_order_management_agent() -> ReActAgent:
     return ReActAgent(
         name="OrderManagementAgent",
         sys_prompt=ORDER_MANAGEMENT_PROMPT,
-        model=OpenAIChatModel(
-            model_name=s.openai_model,
-            api_key=s.openai_api_key,
-            stream=False,
-        ),
+        model=make_chat_model(s),
         formatter=make_multi_agent_formatter(s),
         toolkit=_make_toolkit(),
         memory=InMemoryMemory(),

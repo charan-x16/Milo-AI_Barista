@@ -9,6 +9,7 @@ from typing import AsyncIterator
 from fastapi import APIRouter
 from fastapi.responses import HTMLResponse, StreamingResponse
 
+from cafe.agents.llm import normalized_provider
 from cafe.agents.session_manager import get_session_manager
 from cafe.api.debug_dashboard import DASHBOARD_HTML as DASHBOARD_PAGE_HTML
 from cafe.config import get_settings
@@ -79,6 +80,7 @@ def build_flow_state() -> dict:
             {"name": "Memory", "status": f"compress at {settings.memory_compression_trigger_tokens} tokens"},
         ],
         "runtime": {
+            "provider": normalized_provider(settings),
             "model": settings.openai_model,
             "active_sessions": session_ids,
             "memory_max_prompt_tokens": settings.memory_max_prompt_tokens,
@@ -439,6 +441,7 @@ DASHBOARD_HTML = """
       `).join("") : `<div class="empty">No chat turns yet.</div>`;
 
       document.getElementById("runtime").innerHTML = [
+        ["provider", state.runtime.provider],
         ["model", state.runtime.model],
         ["active sessions", state.runtime.active_sessions.length],
         ["max prompt tokens", state.runtime.memory_max_prompt_tokens],

@@ -7,9 +7,23 @@ These helpers keep that prompt bounded and summarize older turns.
 from pydantic import BaseModel, Field
 
 from agentscope.agent import ReActAgent
-from agentscope.formatter import OpenAIChatFormatter, OpenAIMultiAgentFormatter
-from agentscope.token import OpenAITokenCounter
+from agentscope.formatter import (
+    AnthropicChatFormatter,
+    AnthropicMultiAgentFormatter,
+    DashScopeChatFormatter,
+    DashScopeMultiAgentFormatter,
+    DeepSeekChatFormatter,
+    DeepSeekMultiAgentFormatter,
+    GeminiChatFormatter,
+    GeminiMultiAgentFormatter,
+    OllamaChatFormatter,
+    OllamaMultiAgentFormatter,
+    OpenAIChatFormatter,
+    OpenAIMultiAgentFormatter,
+)
+from agentscope.token import CharTokenCounter, OpenAITokenCounter
 
+from cafe.agents.llm import normalized_provider
 from cafe.config import Settings
 
 
@@ -51,22 +65,49 @@ COMPRESSION_PROMPT = (
 )
 
 
-def make_token_counter(settings: Settings) -> OpenAITokenCounter:
-    return OpenAITokenCounter(settings.openai_model)
+def make_token_counter(settings: Settings):
+    provider = normalized_provider(settings)
+    if provider in {"openai", "deepseek", "groq", "openrouter"}:
+        return OpenAITokenCounter(settings.openai_model)
+    return CharTokenCounter()
 
 
-def make_chat_formatter(settings: Settings) -> OpenAIChatFormatter:
-    return OpenAIChatFormatter(
-        token_counter=make_token_counter(settings),
-        max_tokens=settings.memory_max_prompt_tokens,
-    )
+def make_chat_formatter(settings: Settings):
+    kwargs = {
+        "token_counter": make_token_counter(settings),
+        "max_tokens": settings.memory_max_prompt_tokens,
+    }
+    provider = normalized_provider(settings)
+    if provider == "anthropic":
+        return AnthropicChatFormatter(**kwargs)
+    if provider == "gemini":
+        return GeminiChatFormatter(**kwargs)
+    if provider == "ollama":
+        return OllamaChatFormatter(**kwargs)
+    if provider == "dashscope":
+        return DashScopeChatFormatter(**kwargs)
+    if provider == "deepseek":
+        return DeepSeekChatFormatter(**kwargs)
+    return OpenAIChatFormatter(**kwargs)
 
 
-def make_multi_agent_formatter(settings: Settings) -> OpenAIMultiAgentFormatter:
-    return OpenAIMultiAgentFormatter(
-        token_counter=make_token_counter(settings),
-        max_tokens=settings.memory_max_prompt_tokens,
-    )
+def make_multi_agent_formatter(settings: Settings):
+    kwargs = {
+        "token_counter": make_token_counter(settings),
+        "max_tokens": settings.memory_max_prompt_tokens,
+    }
+    provider = normalized_provider(settings)
+    if provider == "anthropic":
+        return AnthropicMultiAgentFormatter(**kwargs)
+    if provider == "gemini":
+        return GeminiMultiAgentFormatter(**kwargs)
+    if provider == "ollama":
+        return OllamaMultiAgentFormatter(**kwargs)
+    if provider == "dashscope":
+        return DashScopeMultiAgentFormatter(**kwargs)
+    if provider == "deepseek":
+        return DeepSeekMultiAgentFormatter(**kwargs)
+    return OpenAIMultiAgentFormatter(**kwargs)
 
 
 def make_compression_config(settings: Settings) -> ReActAgent.CompressionConfig:
