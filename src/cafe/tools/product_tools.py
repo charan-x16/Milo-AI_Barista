@@ -1,4 +1,6 @@
 import asyncio
+from functools import lru_cache
+from pathlib import Path
 
 from agentscope.tool import ToolResponse
 
@@ -8,6 +10,10 @@ from cafe.models.tool_io import ToolResult
 from cafe.services import menu_service
 from cafe.services.rag_service import RagHit, build_rag_service, rag_sources
 from cafe.tools._wrap import wrap
+
+
+MENU_DOC_PATH = Path(__file__).resolve().parents[1] / "Docs" / "BTB_Menu_Enhanced.md"
+PIZZA_GROUP_HEADINGS = {"Veg Pizzas", "Non-Veg Pizzas"}
 
 
 def _serialize_hits(hits: list[RagHit]) -> list[dict[str, object]]:
@@ -25,6 +31,100 @@ def _serialize_hits(hits: list[RagHit]) -> list[dict[str, object]]:
 def _retrieve_knowledge_source(source_key: str, query: str, max_results: int) -> list[RagHit]:
     source = rag_sources()[source_key]
     return build_rag_service().retrieve(source.collection_name, query, limit=max_results)
+
+
+@lru_cache
+def _menu_category_index() -> dict[str, object]:
+    text = MENU_DOC_PATH.read_text(encoding="utf-8")
+    top_level: dict[str, list[dict[str, object]]] = {}
+    categories: list[dict[str, object]] = []
+    current: dict[str, object] | None = None
+
+    for raw_line in text.splitlines():
+        line = raw_line.strip()
+
+        if line.startswith("## Beverages > ") or line.startswith("## Food > "):
+            path = [part.strip() for part in line[3:].split(">")]
+            category = {
+                "top_level": path[0],
+                "name": " > ".join(path[1:]),
+                "path": path,
+                "items": [],
+            }
+            top_level.setdefault(path[0], []).append(category)
+            categories.append(category)
+            current = category
+            continue
+
+        if current is None:
+            continue
+
+        if line.startswith("## "):
+            current = None
+            continue
+
+        if line.startswith("### "):
+            item_name = line[4:].strip()
+            if item_name not in PIZZA_GROUP_HEADINGS:
+                current["items"].append(item_name)
+            continue
+
+        if line.startswith("#### "):
+            current["items"].append(line[5:].strip())
+
+    return {
+        "top_level_categories": list(top_level),
+        "categories": [
+            {
+                "top_level": category["top_level"],
+                "name": category["name"],
+                "path": category["path"],
+                "items": category["items"],
+                "item_count": len(category["items"]),
+            }
+            for category in categories
+        ],
+        "flat_category_names": [category["name"] for category in categories],
+        "aliases": {
+            "drinks": "Beverages",
+            "drink": "Beverages",
+            "beverages": "Beverages",
+            "food": "Food",
+        },
+    }
+
+
+async def list_menu_categories(include_items: bool = True) -> ToolResponse:
+    """List menu categories from the canonical menu document.
+
+    Args:
+        include_items: When true, include item names under each category.
+
+    Returns:
+        ToolResult.ok(top_level_categories=..., categories=..., flat_category_names=...).
+
+    Example:
+        list_menu_categories(include_items=True)
+    """
+    try:
+        index = _menu_category_index()
+        categories = []
+        for category in index["categories"]:
+            category_data = dict(category)
+            if not include_items:
+                category_data.pop("items", None)
+            categories.append(category_data)
+
+        return wrap(
+            ToolResult.ok(
+                top_level_categories=index["top_level_categories"],
+                categories=categories,
+                flat_category_names=index["flat_category_names"],
+                aliases=index["aliases"],
+            )
+        )
+    except Exception as e:
+        return wrap(ToolResult.fail(f"Menu category index error: {e}"))
 
 
 async def search_products(query: str, max_results: int = 5) -> ToolResponse:

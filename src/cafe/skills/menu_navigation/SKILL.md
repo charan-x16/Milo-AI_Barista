@@ -57,10 +57,11 @@ preference matching:
   unless the retrieved data explicitly supports it.
 
 ## Categories
-Common structured categories include coffee, tea, food, and dessert. The RAG
-menu also contains richer groups such as cold brew, cold coffee, iced tea,
-mocktail, shake, herbal tea, fries, wraps, sandwiches, pasta, pizza, salads,
-and appetizers. Use the user's wording, then map it to retrieved categories.
+Use `list_menu_categories` when the user asks for all categories, menu
+sections, category choices, or what they can select from. Call it with
+`include_items=true` when the user asks what is inside the categories. Treat
+"drinks" as "Beverages" and preserve the returned category names instead of
+inventing or summarizing missing groups.
 
 ## Recommendations
 - Recommend two to four options unless the user asks for more.

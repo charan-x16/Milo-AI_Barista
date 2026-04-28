@@ -8,6 +8,7 @@ from cafe.tools.order_tools import cancel_order, place_order
 from cafe.tools import product_tools
 from cafe.tools.product_tools import (
     get_product_details,
+    list_menu_categories,
     search_product_and_attribute_knowledge,
     search_products,
 )
@@ -39,6 +40,23 @@ async def test_get_product_details_unknown_returns_failure(store):
     data = payload(await get_product_details("nope"))
 
     assert data["success"] is False
+
+
+@pytest.mark.asyncio
+async def test_list_menu_categories_includes_beverages_and_food_items(store):
+    data = payload(await list_menu_categories(include_items=True))
+
+    assert data["success"] is True
+    category_names = data["data"]["flat_category_names"]
+    assert "Coffees" in category_names
+    assert "Mocktails" in category_names
+    assert "Pizzas" in category_names
+
+    categories = data["data"]["categories"]
+    coffees = next(category for category in categories if category["name"] == "Coffees")
+    pizzas = next(category for category in categories if category["name"] == "Pizzas")
+    assert "Espresso" in coffees["items"]
+    assert "Kentucky Crunch Chicken Pizza" in pizzas["items"]
 
 
 @pytest.mark.asyncio

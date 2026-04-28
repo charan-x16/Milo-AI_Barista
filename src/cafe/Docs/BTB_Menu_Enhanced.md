@@ -10,6 +10,38 @@
 
 ---
 
+## MENU CATEGORY INDEX (for category-selection requests)
+
+> **How to use this section:** When a user asks for menu categories, all categories, what they can select from, or what is inside the menu, use this index first. "Drinks" means **Beverages**.
+
+### Beverages
+
+- **Coffees:** Espresso, Doppio, Americano, Long Black, Cortado, Cappuccino, Latte, Flat White, Vietnamese Coffee, Mocha, Affogato
+- **Coffee Fusions:** Tonic Espresso, Citrus Espresso, Cranberry Espresso, Vanilla Latte, Cinnamon Latte, Rose Latte, Hazelnut Latte, Biscoff Latte, Irish Latte
+- **Cold Brews:** Original Cold Brew, Sunset Cold Brew, Winterberry Cold Brew, Cafe Cola Cold Brew, Ginger Zest Cold Brew
+- **Cold Coffees:** OG Cold Coffee, Caramel Cold Coffee, Irish Cold Coffee, Hazelnut Cold Coffee, Choco Chip Coffee, Brownie Cold Coffee
+- **Shakes:** Biscoff Bliss Shake, Triple Berry Shake, Oreo Shake, Brownie Shake, Nutella Shake, Strawberry Shake
+- **Iced Teas:** Lemon Iced Tea, Peach Iced Tea, Passionfruit Iced Tea, Hibiscus Iced Tea
+- **Herbal Teas:** Blue Pea Herbal Tea, Chamomile Herbal Tea, Moroccan Mint Herbal Tea, Kashmiri Kahwa, Lavender Herbal Tea, Apple Cinnamon Herbal Tea
+- **Drinking Chocolate:** Hot Chocolate
+- **Mocktails:** Virgin Mojito, Blue Curaçao Mojito, Berry Breeze Mojito, Black Currant Mojito, Sparkling Peach Mojito
+
+### Food
+
+- **Salads:** Veg Caesar Salad, Veg Mexican Salad, Chicken Caesar Salad, Chicken Mexican Salad
+- **Appetizers > French Fries:** Salted Fries, Peri Peri Fries, Loaded Veg Fries, Loaded Chicken Fries
+- **Appetizers > Veg Crispy:** Onion Rings, Jalapeño Bites, Crispy Paneer Pops, Mozzarella Cheese Sticks
+- **Appetizers > Nachos:** Classic Nachos, Veg Loaded Nachos, Chicken Loaded Nachos
+- **Garlic Breads:** Classic Garlic Bread, Cheesy Garlic Bread, Jalapeño Garlic Bread, Rosemary Chicken Garlic Bread
+- **Chicken Wings:** Chicken Barbeque Wings, Chicken Peri Peri Wings, Chicken Wild Wings
+- **Chicken Starters:** Chicken Garlic Strips, Chicken Popcorn, Jamaican Chicken, Cilantro Chicken, Grilled Chicken with Veggies
+- **Wraps:** Garden Fry Wrap, Paneer Makhani Wrap, Fried Paneer Wrap, Chicken and Cheese Wrap, Fried Chicken Wrap, Wrapzilla
+- **Sandwiches:** Gourmet Grilled Cheese Sandwich, Corn Meltz Sandwich, Creamy Mushroom Sandwich, Crunchy Paneer Sandwich, Paneer Makhani Sandwich, Chipotle Chicken Sandwich, Creamy Chicken Sandwich, Chicken Makhani Sandwich, Crunchy Chicken Sandwich
+- **Pasta:** Veg Indie Tikka Pasta, Veg Pesto Pasta, Veg Creamy Rosso Pasta, Veg Arrabbiata Pasta, Veg Alfredo Pasta, Chicken Alfredo Pasta, Chicken Creamy Rosso Pasta, Chicken Indie Tikka Pasta, Chicken Pesto Pasta, Chicken Arrabiata Pasta
+- **Pizzas:** Margherita Pizza, Corn Fiesta Pizza, Farmhouse Pizza, Mediterranean Pizza, Veg Pesto Pizza, Paneer-e-licious Pizza, Fiery Paneer Pizza, Chicken Tikka Pizza, Satanic Chicken Pizza, Backyard Smoke Chicken Pizza, Chicken Max Pizza, Kentucky Crunch Chicken Pizza
+
+---
+
 ## PRICE QUICK-REFERENCE (for price-based lookups)
 
 > **How to use this section:** When a user asks for items by price (e.g., "drinks under ₹150", "cheapest coffee", "food under ₹300", "most expensive drink"), refer to the sorted lists below. All prices in ₹ (INR), taxes extra. For items with Hot/Iced variants at different prices, both are listed separately.

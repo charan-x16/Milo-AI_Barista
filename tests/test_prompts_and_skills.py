@@ -31,6 +31,16 @@ def test_loaded_prompts_contain_expected_keywords():
     assert "Customer Support" in prompts.CUSTOMER_SUPPORT_PROMPT
 
 
+def test_category_prompts_preserve_complete_category_lists():
+    product_prompt = " ".join(prompts.PRODUCT_SEARCH_PROMPT.split())
+    orchestrator_prompt = " ".join(prompts.ORCHESTRATOR_PROMPT.split())
+
+    assert "Include every returned top-level category" in product_prompt
+    assert "do not merge, rename, abbreviate, or summarize categories" in product_prompt
+    assert "Concise does not mean incomplete" in orchestrator_prompt
+    assert "Do not merge categories" in orchestrator_prompt
+
+
 def test_skill_files_exist_and_have_valid_yaml_frontmatter():
     expected = [
         "menu_navigation",
