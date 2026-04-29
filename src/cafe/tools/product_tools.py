@@ -94,6 +94,41 @@ def _menu_category_index() -> dict[str, object]:
     }
 
 
+def get_menu_categories(include_items: bool = True) -> dict[str, object]:
+    index = _menu_category_index()
+    categories = []
+    for category in index["categories"]:
+        category_data = dict(category)
+        if not include_items:
+            category_data.pop("items", None)
+        categories.append(category_data)
+
+    return {
+        "top_level_categories": index["top_level_categories"],
+        "categories": categories,
+        "flat_category_names": index["flat_category_names"],
+        "aliases": index["aliases"],
+    }
+
+
+def format_menu_categories(include_items: bool = True) -> str:
+    data = get_menu_categories(include_items=include_items)
+    lines = ["Here is the complete menu category list:"]
+
+    for top_level in data["top_level_categories"]:
+        lines.extend(["", f"{top_level}:"])
+        for category in data["categories"]:
+            if category["top_level"] != top_level:
+                continue
+            if include_items:
+                items = ", ".join(category["items"])
+                lines.append(f"- {category['name']}: {items}")
+            else:
+                lines.append(f"- {category['name']}")
+
+    return "\n".join(lines)
+
+
 async def list_menu_categories(include_items: bool = True) -> ToolResponse:
     """List menu categories from the canonical menu document.
 
@@ -101,26 +136,16 @@ async def list_menu_categories(include_items: bool = True) -> ToolResponse:
         include_items: When true, include item names under each category.
 
     Returns:
-        ToolResult.ok(top_level_categories=..., categories=..., flat_category_names=...).
+        ToolResult.ok(display_text=..., top_level_categories=..., categories=...).
 
     Example:
         list_menu_categories(include_items=True)
     """
     try:
-        index = _menu_category_index()
-        categories = []
-        for category in index["categories"]:
-            category_data = dict(category)
-            if not include_items:
-                category_data.pop("items", None)
-            categories.append(category_data)
-
         return wrap(
             ToolResult.ok(
-                top_level_categories=index["top_level_categories"],
-                categories=categories,
-                flat_category_names=index["flat_category_names"],
-                aliases=index["aliases"],
+                display_text=format_menu_categories(include_items=include_items),
+                **get_menu_categories(include_items=include_items),
             )
         )
     except Exception as e:

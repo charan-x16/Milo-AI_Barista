@@ -41,6 +41,31 @@ def test_category_prompts_preserve_complete_category_lists():
     assert "Do not merge categories" in orchestrator_prompt
 
 
+def test_followup_scope_prompts_do_not_overcarry_old_category():
+    product_prompt = " ".join(prompts.PRODUCT_SEARCH_PROMPT.split())
+    orchestrator_prompt = " ".join(prompts.ORCHESTRATOR_PROMPT.split())
+
+    assert "do not over-carry old category filters" in orchestrator_prompt
+    assert '"anything under 100" means search the whole menu' in orchestrator_prompt
+    assert "search across the whole menu instead of inheriting the previous category" in product_prompt
+    assert 'If the user says "not in coffee"' in product_prompt
+
+
+def test_preference_prompts_make_vegan_recommendations_specific():
+    product_prompt = " ".join(prompts.PRODUCT_SEARCH_PROMPT.split())
+    orchestrator_prompt = " ".join(prompts.ORCHESTRATOR_PROMPT.split())
+    skill_text = (SKILL_DIR / "menu_navigation" / "SKILL.md").read_text(encoding="utf-8")
+    skill_prompt = " ".join(skill_text.split())
+
+    assert "Preserve explicit user preferences" in orchestrator_prompt
+    assert "Treat short confirmations" in orchestrator_prompt
+    assert "call Product Search for specific vegan options" in orchestrator_prompt
+    assert "list two to four specific drinks" in product_prompt
+    assert "Do not say \"all of these\"" in product_prompt
+    assert "Never invent menu items or categories" in product_prompt
+    assert "list specific item names" in skill_prompt
+
+
 def test_skill_files_exist_and_have_valid_yaml_frontmatter():
     expected = [
         "menu_navigation",

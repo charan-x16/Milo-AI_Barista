@@ -7,6 +7,7 @@ from cafe.tools.cart_tools import add_to_cart, view_cart
 from cafe.tools.order_tools import cancel_order, place_order
 from cafe.tools import product_tools
 from cafe.tools.product_tools import (
+    format_menu_categories,
     get_product_details,
     list_menu_categories,
     search_product_and_attribute_knowledge,
@@ -47,6 +48,8 @@ async def test_list_menu_categories_includes_beverages_and_food_items(store):
     data = payload(await list_menu_categories(include_items=True))
 
     assert data["success"] is True
+    assert "display_text" in data["data"]
+    assert "Coffee Fusions" in data["data"]["display_text"]
     category_names = data["data"]["flat_category_names"]
     assert "Coffees" in category_names
     assert "Mocktails" in category_names
@@ -57,6 +60,17 @@ async def test_list_menu_categories_includes_beverages_and_food_items(store):
     pizzas = next(category for category in categories if category["name"] == "Pizzas")
     assert "Espresso" in coffees["items"]
     assert "Kentucky Crunch Chicken Pizza" in pizzas["items"]
+
+
+def test_format_menu_categories_includes_all_sections_and_items(store):
+    text = format_menu_categories(include_items=True)
+
+    assert "Beverages:" in text
+    assert "- Coffee Fusions:" in text
+    assert "- Cold Brews:" in text
+    assert "- Cold Coffees:" in text
+    assert "- Appetizers > French Fries:" in text
+    assert "Kentucky Crunch Chicken Pizza" in text
 
 
 @pytest.mark.asyncio

@@ -40,6 +40,12 @@ When a user asks for vegan or vegetarian items:
 - Milk-based coffee drinks may be vegan-adaptable only when retrieved menu
   knowledge confirms a plant-based milk upgrade. Mention any surcharge only
   when retrieved.
+- If vegan is already known from conversation memory, keep using it as an
+  active preference for later drink, coffee, recommendation, and category
+  requests until the user changes it.
+- When recommending vegan or vegan-adaptable options, list specific item names
+  and the reason each fits. Do not answer with only broad groups like "coffees"
+  or "mocktails."
 - For severe allergies or strict dietary needs, avoid guarantees and route
   policy-level safety questions to Customer Support.
 

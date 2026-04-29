@@ -64,6 +64,19 @@ def _extract_text(msg) -> str:
     return "".join(parts) or str(msg)
 
 
+def _extract_blocks_text(content) -> str:
+    if isinstance(content, str):
+        return content
+
+    parts = []
+    for block in content or []:
+        if isinstance(block, dict) and block.get("type") == "text":
+            parts.append(block.get("text", ""))
+        elif getattr(block, "type", None) == "text":
+            parts.append(getattr(block, "text", ""))
+    return "".join(parts)
+
+
 async def _extract_tool_calls(agent) -> list[dict]:
     calls: list[dict] = []
     try:
@@ -86,6 +99,48 @@ async def _extract_tool_calls(agent) -> list[dict]:
                     "input": getattr(block, "input", None),
                 })
     return calls
+
+
+async def _extract_tool_results(agent) -> list[dict]:
+    results: list[dict] = []
+    try:
+        msgs = agent.memory.get_memory()
+        if isawaitable(msgs):
+            msgs = await msgs
+    except Exception:
+        return results
+
+    for msg in msgs[-12:]:
+        content = getattr(msg, "content", []) or []
+        if isinstance(content, str):
+            continue
+        for block in content:
+            if isinstance(block, dict) and block.get("type") == "tool_result":
+                results.append({
+                    "name": block.get("name"),
+                    "output": _extract_blocks_text(block.get("output")),
+                })
+            elif getattr(block, "type", None) == "tool_result":
+                results.append({
+                    "name": getattr(block, "name", None),
+                    "output": _extract_blocks_text(getattr(block, "output", None)),
+                })
+    return results
+
+
+def _product_specialist_passthrough(
+    tool_calls: list[dict],
+    tool_results: list[dict],
+) -> str | None:
+    """Return Product Search output directly for product-only turns."""
+    if len(tool_calls) != 1 or tool_calls[0].get("name") != "ask_product_agent":
+        return None
+
+    for result in reversed(tool_results):
+        if result.get("name") == "ask_product_agent":
+            output = str(result.get("output", "")).strip()
+            return output or None
+    return None
 
 
 # The 7-step turn
@@ -145,6 +200,7 @@ async def run_turn(
     trace.add_event(turn_id, "orchestrator", "complete", "Agent returned a reply")
     reply = _extract_text(reply_msg)
     tool_calls = await _extract_tool_calls(orchestrator)
+    tool_results = await _extract_tool_results(orchestrator)
     trace.add_event(
         turn_id,
         "tools",
@@ -153,6 +209,15 @@ async def run_turn(
         {"tool_calls": tool_calls},
     )
     mutated = any(call["name"] in MUTATING_TOOLS for call in tool_calls)
+    passthrough_reply = _product_specialist_passthrough(tool_calls, tool_results)
+    if passthrough_reply:
+        reply = passthrough_reply
+        trace.add_event(
+            turn_id,
+            "response",
+            "running",
+            "Using Product Search specialist response directly",
+        )
 
     # Step 6: validation hook (Phase 2)
     critique_payload = None

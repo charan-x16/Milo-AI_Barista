@@ -22,3 +22,4 @@ def test_specialist_cache_initially_empty():
 
 def test_get_session_manager_returns_singleton():
     assert get_session_manager() is get_session_manager()
+

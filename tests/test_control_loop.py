@@ -1,3 +1,5 @@
+from types import SimpleNamespace
+
 import pytest
 
 from cafe.core.control_loop import _build_context, run_turn
@@ -41,3 +43,40 @@ def test_context_no_cart_no_orders():
 
     assert "[session_id=brand_new]" in ctx
     assert "cart" not in ctx
+
+
+@pytest.mark.asyncio
+async def test_product_only_turn_returns_specialist_reply(monkeypatch):
+    specialist_reply = "- Beverages:\n  - Coffees\n  - Coffee Fusions"
+
+    class ProductOnlyAgent:
+        def __init__(self):
+            self.memory = SimpleNamespace(get_memory=lambda: [
+                SimpleNamespace(content=[
+                    {
+                        "type": "tool_use",
+                        "name": "ask_product_agent",
+                        "input": {"query": "Show me the menu"},
+                    },
+                    {
+                        "type": "tool_result",
+                        "name": "ask_product_agent",
+                        "output": [{"type": "text", "text": specialist_reply}],
+                    },
+                ])
+            ])
+
+        async def __call__(self, msg):
+            return SimpleNamespace(content="Here's the menu categories.")
+
+    from cafe.agents import session_manager as sm
+
+    monkeypatch.setattr(
+        sm.SessionManager,
+        "get_or_create",
+        lambda self, session_id: ProductOnlyAgent(),
+    )
+
+    out = await run_turn("s1", "show the menu")
+
+    assert out["reply"] == specialist_reply
