@@ -16,8 +16,15 @@ from typing import Any
 
 from agentscope.message import Msg
 
+from cafe.agents.specialist_tools import (
+    reset_current_session_id,
+    reset_current_user_request,
+    set_current_session_id,
+    set_current_user_request,
+)
 from cafe.agents.session_manager import get_session_manager
 from cafe.core.debug_trace import get_debug_trace_store
+from cafe.core.deterministic_menu import deterministic_menu_reply
 from cafe.core.state import get_store
 
 
@@ -26,6 +33,13 @@ log = logging.getLogger(__name__)
 MUTATING_TOOLS = {
     "ask_cart_agent",
     "ask_order_agent",
+}
+
+SPECIALIST_TOOLS = {
+    "ask_product_agent",
+    "ask_cart_agent",
+    "ask_order_agent",
+    "ask_support_agent",
 }
 
 
@@ -77,16 +91,19 @@ def _extract_blocks_text(content) -> str:
     return "".join(parts)
 
 
-async def _extract_tool_calls(agent) -> list[dict]:
-    calls: list[dict] = []
+async def _get_agent_memory(agent) -> list:
     try:
         msgs = agent.memory.get_memory()
         if isawaitable(msgs):
             msgs = await msgs
     except Exception:
-        return calls
+        return []
+    return list(msgs or [])
 
-    for msg in msgs[-12:]:
+
+def _extract_tool_calls_from_messages(msgs: list) -> list[dict]:
+    calls: list[dict] = []
+    for msg in msgs:
         content = getattr(msg, "content", []) or []
         if isinstance(content, str):
             continue
@@ -101,16 +118,9 @@ async def _extract_tool_calls(agent) -> list[dict]:
     return calls
 
 
-async def _extract_tool_results(agent) -> list[dict]:
+def _extract_tool_results_from_messages(msgs: list) -> list[dict]:
     results: list[dict] = []
-    try:
-        msgs = agent.memory.get_memory()
-        if isawaitable(msgs):
-            msgs = await msgs
-    except Exception:
-        return results
-
-    for msg in msgs[-12:]:
+    for msg in msgs:
         content = getattr(msg, "content", []) or []
         if isinstance(content, str):
             continue
@@ -128,16 +138,28 @@ async def _extract_tool_results(agent) -> list[dict]:
     return results
 
 
-def _product_specialist_passthrough(
+async def _extract_tool_calls(agent) -> list[dict]:
+    return _extract_tool_calls_from_messages((await _get_agent_memory(agent))[-12:])
+
+
+async def _extract_tool_results(agent) -> list[dict]:
+    return _extract_tool_results_from_messages((await _get_agent_memory(agent))[-12:])
+
+
+def _single_specialist_passthrough(
     tool_calls: list[dict],
     tool_results: list[dict],
 ) -> str | None:
-    """Return Product Search output directly for product-only turns."""
-    if len(tool_calls) != 1 or tool_calls[0].get("name") != "ask_product_agent":
+    """Return specialist output directly for single-specialist turns."""
+    if len(tool_calls) != 1:
+        return None
+
+    tool_name = tool_calls[0].get("name")
+    if tool_name not in SPECIALIST_TOOLS:
         return None
 
     for result in reversed(tool_results):
-        if result.get("name") == "ask_product_agent":
+        if result.get("name") == tool_name:
             output = str(result.get("output", "")).strip()
             return output or None
     return None
@@ -173,9 +195,36 @@ async def run_turn(
         "Built session context snapshot",
         {"context": context},
     )
+
+    deterministic_reply = deterministic_menu_reply(session_id, user_text)
+    if deterministic_reply:
+        trace.add_event(
+            turn_id,
+            "deterministic_menu",
+            "complete",
+            "Answered from canonical menu index without LLM",
+            {"route": deterministic_reply.route},
+        )
+        trace.finish_turn(
+            turn_id,
+            "complete",
+            deterministic_reply.reply,
+            deterministic_reply.tool_calls,
+            None,
+        )
+        return {
+            "reply": deterministic_reply.reply,
+            "tool_calls": deterministic_reply.tool_calls,
+            "critique": None,
+        }
+
     msg = Msg(name="user", content=f"{context} {user_text}", role="user")
+    memory_before = await _get_agent_memory(orchestrator)
+    memory_before_count = len(memory_before)
 
     # Steps 3, 4, 5: planning + execution + tool calls (handled by ReAct)
+    user_request_token = set_current_user_request(user_text)
+    session_token = set_current_session_id(session_id)
     try:
         trace.add_event(turn_id, "orchestrator", "running", "Calling ReAct agent")
         reply_msg = await orchestrator(msg)
@@ -195,12 +244,19 @@ async def run_turn(
             "tool_calls": [],
             "critique": None,
         }
+    finally:
+        reset_current_user_request(user_request_token)
+        reset_current_session_id(session_token)
 
     # Step 7: assemble reply
     trace.add_event(turn_id, "orchestrator", "complete", "Agent returned a reply")
     reply = _extract_text(reply_msg)
-    tool_calls = await _extract_tool_calls(orchestrator)
-    tool_results = await _extract_tool_results(orchestrator)
+    memory_after = await _get_agent_memory(orchestrator)
+    current_turn_messages = memory_after[memory_before_count:]
+    if not current_turn_messages:
+        current_turn_messages = memory_after[-12:]
+    tool_calls = _extract_tool_calls_from_messages(current_turn_messages)
+    tool_results = _extract_tool_results_from_messages(current_turn_messages)
     trace.add_event(
         turn_id,
         "tools",
@@ -209,14 +265,14 @@ async def run_turn(
         {"tool_calls": tool_calls},
     )
     mutated = any(call["name"] in MUTATING_TOOLS for call in tool_calls)
-    passthrough_reply = _product_specialist_passthrough(tool_calls, tool_results)
+    passthrough_reply = _single_specialist_passthrough(tool_calls, tool_results)
     if passthrough_reply:
         reply = passthrough_reply
         trace.add_event(
             turn_id,
             "response",
             "running",
-            "Using Product Search specialist response directly",
+            "Using single specialist response directly",
         )
 
     # Step 6: validation hook (Phase 2)

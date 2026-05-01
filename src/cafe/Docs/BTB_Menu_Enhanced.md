@@ -14,6 +14,20 @@
 
 > **How to use this section:** When a user asks for menu categories, all categories, what they can select from, or what is inside the menu, use this index first. "Drinks" means **Beverages**.
 
+### Browse Aliases
+
+- **drink:** Beverages
+- **drinks:** Beverages
+- **beverage:** Beverages
+- **beverages:** Beverages
+- **food:** Food
+- **coffee:** Coffees, Coffee Fusions, Cold Brews, Cold Coffees
+- **coffee options:** Coffees, Coffee Fusions, Cold Brews, Cold Coffees
+- **cold beverage:** Cold Brews, Cold Coffees, Shakes, Iced Teas, Mocktails
+- **cold beverages:** Cold Brews, Cold Coffees, Shakes, Iced Teas, Mocktails
+- **cold drink:** Cold Brews, Cold Coffees, Shakes, Iced Teas, Mocktails
+- **cold drinks:** Cold Brews, Cold Coffees, Shakes, Iced Teas, Mocktails
+
 ### Beverages
 
 - **Coffees:** Espresso, Doppio, Americano, Long Black, Cortado, Cappuccino, Latte, Flat White, Vietnamese Coffee, Mocha, Affogato

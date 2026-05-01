@@ -11,8 +11,11 @@ from cafe.agents.memory import make_multi_agent_formatter
 from cafe.agents.prompts import PRODUCT_SEARCH_PROMPT
 from cafe.config import get_settings
 from cafe.tools.product_tools import (
-    list_menu_categories,
+    browse_current_menu_request,
+    filter_current_menu_by_price,
+    list_current_menu_prices,
     search_menu_attribute_knowledge,
+    search_product_and_attribute_knowledge,
     search_product_knowledge,
 )
 
@@ -22,9 +25,12 @@ _SKILL_DIR = Path(__file__).resolve().parents[2] / "skills" / "menu_navigation"
 
 def _make_toolkit() -> Toolkit:
     tk = Toolkit()
-    tk.register_tool_function(list_menu_categories)
+    tk.register_tool_function(browse_current_menu_request)
+    tk.register_tool_function(filter_current_menu_by_price)
+    tk.register_tool_function(list_current_menu_prices)
     tk.register_tool_function(search_product_knowledge)
     tk.register_tool_function(search_menu_attribute_knowledge)
+    tk.register_tool_function(search_product_and_attribute_knowledge)
     tk.register_tool_function(view_text_file)
     tk.register_agent_skill(str(_SKILL_DIR))
     return tk

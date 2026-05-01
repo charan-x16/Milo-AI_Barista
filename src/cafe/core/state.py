@@ -8,6 +8,7 @@ class StateStore:
         self.menu: dict[str, MenuItem] = {}
         self.carts: dict[str, Cart] = {}
         self.orders: dict[str, Order] = {}
+        self.last_menu_scope: dict[str, str] = {}
 
     def get_cart(self, session_id: str) -> Cart:
         if session_id not in self.carts:
@@ -17,6 +18,7 @@ class StateStore:
     def reset(self) -> None:
         self.carts.clear()
         self.orders.clear()
+        self.last_menu_scope.clear()
 
 
 def _seed_menu(store: StateStore) -> None:

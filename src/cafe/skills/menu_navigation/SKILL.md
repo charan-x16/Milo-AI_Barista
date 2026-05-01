@@ -63,11 +63,29 @@ preference matching:
   unless the retrieved data explicitly supports it.
 
 ## Categories
-Use `list_menu_categories` when the user asks for all categories, menu
-sections, category choices, or what they can select from. Call it with
-`include_items=true` when the user asks what is inside the categories. Treat
-"drinks" as "Beverages" and preserve the returned category names instead of
-inventing or summarizing missing groups.
+Use `browse_current_menu_request()` for menu browsing. It chooses between
+section lists and section item lists from the canonical menu index using the
+original Product Search request.
+For first menu-browsing replies, it should show sections first. When the user
+asks what is inside a section or asks for items under a named category, it
+should return the actual item names for that section. Treat "drinks" as
+"Beverages". Treat "cold beverages" or "cold drinks" as a browse request for
+the cold drink sections, not as a price request. Preserve returned category
+names instead of inventing or summarizing missing groups.
+
+## Price Lists
+Use `list_current_menu_prices()` only when the user explicitly asks for price,
+prices, cost, costs, or how much. Do not use it for ordinary browse requests
+such as "show cold beverages" or "what pizzas do you have"; those should stay
+with `browse_current_menu_request()`.
+
+## Budget Filtering
+Use `filter_current_menu_by_price()` for requests like "items under 100",
+"drinks below 200", "food under INR 300", or "anything under 150". Do not use
+menu browsing tools for budget filters. The price-filter tool reads the
+original request and returns only items whose structured price is within the
+limit. If no items match, say that directly instead of suggesting items above
+the user's budget.
 
 ## Recommendations
 - Recommend two to four options unless the user asks for more.

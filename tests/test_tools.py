@@ -7,11 +7,21 @@ from cafe.tools.cart_tools import add_to_cart, view_cart
 from cafe.tools.order_tools import cancel_order, place_order
 from cafe.tools import product_tools
 from cafe.tools.product_tools import (
+    browse_menu,
+    browse_current_menu_request,
+    filter_current_menu_by_price,
     format_menu_categories,
+    format_menu_section_items,
     get_product_details,
+    list_current_menu_prices,
     list_menu_categories,
+    list_menu_section_items,
+    reset_current_product_session_id,
+    reset_current_product_query,
     search_product_and_attribute_knowledge,
     search_products,
+    set_current_product_session_id,
+    set_current_product_query,
 )
 from cafe.tools.support_tools import faq_lookup
 
@@ -45,7 +55,7 @@ async def test_get_product_details_unknown_returns_failure(store):
 
 @pytest.mark.asyncio
 async def test_list_menu_categories_includes_beverages_and_food_items(store):
-    data = payload(await list_menu_categories(include_items=True))
+    data = payload(await list_menu_categories(include_items=True, include_structured=True))
 
     assert data["success"] is True
     assert "display_text" in data["data"]
@@ -71,6 +81,219 @@ def test_format_menu_categories_includes_all_sections_and_items(store):
     assert "- Cold Coffees:" in text
     assert "- Appetizers > French Fries:" in text
     assert "Kentucky Crunch Chicken Pizza" in text
+
+
+def test_format_menu_categories_defaults_to_sections_only(store):
+    text = format_menu_categories()
+
+    assert "Here are the menu sections:" in text
+    assert "- Mocktails" in text
+    assert "- Pizzas" in text
+    assert "Virgin Mojito" not in text
+    assert "Kentucky Crunch Chicken Pizza" not in text
+
+
+def test_format_menu_section_items_returns_named_section_items(store):
+    text = format_menu_section_items("Coffees")
+
+    assert "Here are the items under Coffees:" in text
+    assert "- Espresso" in text
+    assert "- Affogato" in text
+    assert "Tonic Espresso" not in text
+
+
+def test_format_menu_section_items_supports_group_aliases(store):
+    text = format_menu_section_items("coffee")
+
+    assert "Absolutely. Here are the matching sections for coffee:" in text
+    assert "Coffees:" in text
+    assert "Coffee Fusions:" in text
+    assert "Cold Brews:" in text
+    assert "Cold Coffees:" in text
+    assert "- Brownie Cold Coffee" in text
+
+
+@pytest.mark.asyncio
+async def test_list_menu_section_items_returns_display_text(store):
+    data = payload(await list_menu_section_items("Mocktails"))
+
+    assert data["success"] is True
+    assert "Here are the items under Mocktails:" in data["data"]["display_text"]
+    assert "- Virgin Mojito" in data["data"]["display_text"]
+
+
+@pytest.mark.asyncio
+async def test_browse_menu_routes_to_section_items(store):
+    data = payload(await browse_menu("show me the coffees"))
+
+    assert data["success"] is True
+    assert "Here are the items under Coffees:" in data["data"]["display_text"]
+    assert "- Espresso" in data["data"]["display_text"]
+
+
+@pytest.mark.asyncio
+async def test_browse_current_menu_request_uses_original_product_query(store):
+    token = set_current_product_query("Show pizza options")
+    try:
+        data = payload(await browse_current_menu_request())
+    finally:
+        reset_current_product_query(token)
+
+    assert data["success"] is True
+    assert "Here are the items under Pizzas:" in data["data"]["display_text"]
+    assert "- Kentucky Crunch Chicken Pizza" in data["data"]["display_text"]
+
+
+@pytest.mark.asyncio
+async def test_browse_current_menu_request_routes_cold_beverages(store):
+    token = set_current_product_query("show me the cold beverages")
+    try:
+        data = payload(await browse_current_menu_request())
+    finally:
+        reset_current_product_query(token)
+
+    assert data["success"] is True
+    display_text = data["data"]["display_text"]
+    assert data["data"]["passthrough"] is True
+    assert data["data"]["requested_section"] == "cold beverages"
+    assert "Cold Brews:" in display_text
+    assert "Cold Coffees:" in display_text
+    assert "Shakes:" in display_text
+    assert "Iced Teas:" in display_text
+    assert "Mocktails:" in display_text
+    assert "\nCoffees:" not in display_text
+    assert "Hot Chocolate" not in display_text
+
+
+@pytest.mark.asyncio
+async def test_browse_current_menu_request_marks_unknown_browse_as_non_passthrough(store):
+    token = set_current_product_query("any desserts")
+    try:
+        data = payload(await browse_current_menu_request(include_items=True))
+    finally:
+        reset_current_product_query(token)
+
+    assert data["success"] is True
+    assert data["data"]["passthrough"] is False
+    assert data["data"]["response_kind"] == "menu_items"
+    assert "Here is the complete menu, grouped by section:" in data["data"]["display_text"]
+
+
+@pytest.mark.asyncio
+async def test_filter_current_menu_by_price_uses_structured_prices(store):
+    token = set_current_product_query("items under INR 100")
+    try:
+        data = payload(await filter_current_menu_by_price())
+    finally:
+        reset_current_product_query(token)
+
+    assert data["success"] is True
+    assert data["data"]["count"] == 1
+    assert data["data"]["items"][0]["name"] == "Espresso"
+    assert "Espresso - ₹99" in data["data"]["display_text"]
+    assert "Salted Fries" not in data["data"]["display_text"]
+
+
+@pytest.mark.asyncio
+async def test_filter_current_menu_by_price_reports_no_food_matches(store):
+    token = set_current_product_query("food under 100 rupees")
+    try:
+        data = payload(await filter_current_menu_by_price())
+    finally:
+        reset_current_product_query(token)
+
+    assert data["success"] is True
+    assert data["data"]["count"] == 0
+    assert "I could not find any Food items under ₹100" in data["data"]["display_text"]
+    assert "lowest Food option" in data["data"]["display_text"]
+    assert "Classic Nachos at ₹199" in data["data"]["display_text"]
+    assert "Espresso" not in data["data"]["display_text"]
+
+
+@pytest.mark.asyncio
+async def test_filter_current_menu_by_price_supports_plural_category_scope(store):
+    token = set_current_product_query("pizzas under 400")
+    try:
+        data = payload(await filter_current_menu_by_price())
+    finally:
+        reset_current_product_query(token)
+
+    assert data["success"] is True
+    assert data["data"]["count"] == 4
+    assert "Here are the items in Pizzas under ₹400" in data["data"]["display_text"]
+    assert "Margherita Pizza - ₹329" in data["data"]["display_text"]
+    assert "Mediterranean Pizza - ₹389" in data["data"]["display_text"]
+    assert "Veg Pesto Pizza" not in data["data"]["display_text"]
+
+
+@pytest.mark.asyncio
+async def test_list_current_menu_prices_returns_scoped_prices(store):
+    token = set_current_product_query("show prices for all Coffees")
+    try:
+        data = payload(await list_current_menu_prices())
+    finally:
+        reset_current_product_query(token)
+
+    assert data["success"] is True
+    assert data["data"]["count"] == 18
+    assert "Here are the prices for Coffees:" in data["data"]["display_text"]
+    assert "Espresso - ₹99 [Coffee] (Hot)" in data["data"]["display_text"]
+    assert "Americano - ₹169 [Coffee] (Hot)" in data["data"]["display_text"]
+    assert "Americano - ₹199 [Coffee] (Iced)" in data["data"]["display_text"]
+    assert "Tonic Espresso" not in data["data"]["display_text"]
+
+
+@pytest.mark.asyncio
+async def test_list_current_menu_prices_rejects_non_price_browse_request(store):
+    token = set_current_product_query("show me the cold beverages")
+    try:
+        data = payload(await list_current_menu_prices())
+    finally:
+        reset_current_product_query(token)
+
+    assert data["success"] is False
+    assert "does not ask for prices" in data["error"]
+
+
+@pytest.mark.asyncio
+async def test_list_current_menu_prices_scopes_cold_beverages(store):
+    token = set_current_product_query("show prices for cold beverages")
+    try:
+        data = payload(await list_current_menu_prices())
+    finally:
+        reset_current_product_query(token)
+
+    assert data["success"] is True
+    display_text = data["data"]["display_text"]
+    assert "Original Cold Brew" in display_text
+    assert "Virgin Mojito" in display_text
+    assert "Oreo Shake" in display_text
+    assert "Espresso" not in display_text
+    assert "Apple Cinnamon Herbal Tea" not in display_text
+    assert "Hot Chocolate" not in display_text
+
+
+@pytest.mark.asyncio
+async def test_context_dependent_price_request_uses_last_menu_scope(store):
+    session_token = set_current_product_session_id("s-price")
+    browse_token = set_current_product_query("show me the coffees")
+    try:
+        await browse_current_menu_request()
+    finally:
+        reset_current_product_query(browse_token)
+
+    price_token = set_current_product_query("show the prices")
+    try:
+        data = payload(await list_current_menu_prices())
+    finally:
+        reset_current_product_query(price_token)
+        reset_current_product_session_id(session_token)
+
+    assert data["success"] is True
+    assert "Here are the prices for Coffees:" in data["data"]["display_text"]
+    assert "Espresso - ₹99 [Coffee] (Hot)" in data["data"]["display_text"]
+    assert "Tonic Espresso" not in data["data"]["display_text"]
+    assert "Original Cold Brew" not in data["data"]["display_text"]
 
 
 @pytest.mark.asyncio

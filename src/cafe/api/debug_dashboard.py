@@ -250,6 +250,7 @@ DASHBOARD_HTML = """
       background: var(--paper);
       font-size: 14px;
       line-height: 1.35;
+      white-space: pre-wrap;
     }
 
     .bubble.user {

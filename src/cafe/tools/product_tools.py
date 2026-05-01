@@ -1,6 +1,5 @@
 import asyncio
-from functools import lru_cache
-from pathlib import Path
+from contextvars import ContextVar
 
 from agentscope.tool import ToolResponse
 
@@ -8,12 +7,68 @@ from cafe.core.state import get_store
 from cafe.core.validator import ValidationError
 from cafe.models.tool_io import ToolResult
 from cafe.services import menu_service
+from cafe.services.menu_index_service import (
+    extract_price_limit,
+    filter_price_items,
+    format_price_list_query,
+    format_price_filter_query,
+    browse_menu_query,
+    format_menu_categories,
+    format_menu_section_items,
+    get_menu_categories,
+    is_context_dependent_price_request,
+    is_price_list_request,
+    price_items_for_query,
+    requested_section_from_query,
+)
 from cafe.services.rag_service import RagHit, build_rag_service, rag_sources
 from cafe.tools._wrap import wrap
 
 
-MENU_DOC_PATH = Path(__file__).resolve().parents[1] / "Docs" / "BTB_Menu_Enhanced.md"
-PIZZA_GROUP_HEADINGS = {"Veg Pizzas", "Non-Veg Pizzas"}
+_CURRENT_PRODUCT_QUERY: ContextVar[str | None] = ContextVar(
+    "current_product_query",
+    default=None,
+)
+_CURRENT_SESSION_ID: ContextVar[str | None] = ContextVar(
+    "current_product_session_id",
+    default=None,
+)
+
+
+def set_current_product_query(query: str):
+    return _CURRENT_PRODUCT_QUERY.set(query)
+
+
+def reset_current_product_query(token) -> None:
+    _CURRENT_PRODUCT_QUERY.reset(token)
+
+
+def set_current_product_session_id(session_id: str | None):
+    return _CURRENT_SESSION_ID.set(session_id)
+
+
+def reset_current_product_session_id(token) -> None:
+    _CURRENT_SESSION_ID.reset(token)
+
+
+def _remember_menu_scope(query: str) -> None:
+    session_id = _CURRENT_SESSION_ID.get()
+    if not session_id:
+        return
+    section = requested_section_from_query(query)
+    if section:
+        get_store().last_menu_scope[session_id] = section
+
+
+def _query_with_last_scope(query: str) -> str:
+    session_id = _CURRENT_SESSION_ID.get()
+    if (
+        session_id
+        and is_context_dependent_price_request(query)
+        and (last_scope := get_store().last_menu_scope.get(session_id))
+    ):
+        return f"{query} for {last_scope}"
+    return query
 
 
 def _serialize_hits(hits: list[RagHit]) -> list[dict[str, object]]:
@@ -33,123 +88,175 @@ def _retrieve_knowledge_source(source_key: str, query: str, max_results: int) ->
     return build_rag_service().retrieve(source.collection_name, query, limit=max_results)
 
 
-@lru_cache
-def _menu_category_index() -> dict[str, object]:
-    text = MENU_DOC_PATH.read_text(encoding="utf-8")
-    top_level: dict[str, list[dict[str, object]]] = {}
-    categories: list[dict[str, object]] = []
-    current: dict[str, object] | None = None
+async def browse_menu(query: str, include_items: bool | None = None) -> ToolResponse:
+    """Browse the menu index from a natural customer request.
 
-    for raw_line in text.splitlines():
-        line = raw_line.strip()
+    Args:
+        query: The user's menu browsing request, such as "show the menu",
+            "show me the coffees", "mocktails", or "show all coffee options".
+        include_items: Optional override. Use null/default for automatic
+            routing: first menu browsing shows sections; named sections show
+            their items; explicit detailed whole-menu requests show items.
 
-        if line.startswith("## Beverages > ") or line.startswith("## Food > "):
-            path = [part.strip() for part in line[3:].split(">")]
-            category = {
-                "top_level": path[0],
-                "name": " > ".join(path[1:]),
-                "path": path,
-                "items": [],
-            }
-            top_level.setdefault(path[0], []).append(category)
-            categories.append(category)
-            current = category
-            continue
+    Returns:
+        ToolResult.ok(display_text=...) with the exact customer-facing menu
+        browsing response.
 
-        if current is None:
-            continue
-
-        if line.startswith("## "):
-            current = None
-            continue
-
-        if line.startswith("### "):
-            item_name = line[4:].strip()
-            if item_name not in PIZZA_GROUP_HEADINGS:
-                current["items"].append(item_name)
-            continue
-
-        if line.startswith("#### "):
-            current["items"].append(line[5:].strip())
-
-    return {
-        "top_level_categories": list(top_level),
-        "categories": [
-            {
-                "top_level": category["top_level"],
-                "name": category["name"],
-                "path": category["path"],
-                "items": category["items"],
-                "item_count": len(category["items"]),
-            }
-            for category in categories
-        ],
-        "flat_category_names": [category["name"] for category in categories],
-        "aliases": {
-            "drinks": "Beverages",
-            "drink": "Beverages",
-            "beverages": "Beverages",
-            "food": "Food",
-        },
-    }
+    Example:
+        browse_menu(query="show me the coffees")
+    """
+    try:
+        browse_result = browse_menu_query(query, include_items=include_items)
+        return wrap(
+            ToolResult.ok(
+                **browse_result.as_dict(),
+            )
+        )
+    except Exception as e:
+        return wrap(ToolResult.fail(f"Menu browse error: {e}"))
 
 
-def get_menu_categories(include_items: bool = True) -> dict[str, object]:
-    index = _menu_category_index()
-    categories = []
-    for category in index["categories"]:
-        category_data = dict(category)
-        if not include_items:
-            category_data.pop("items", None)
-        categories.append(category_data)
+async def browse_current_menu_request(include_items: bool | None = None) -> ToolResponse:
+    """Browse the menu using the original Product Search request.
 
-    return {
-        "top_level_categories": index["top_level_categories"],
-        "categories": categories,
-        "flat_category_names": index["flat_category_names"],
-        "aliases": index["aliases"],
-    }
+    This avoids lossy tool arguments from the LLM. If the user asks "show pizza
+    options", the tool uses that exact request even if the model would have
+    paraphrased it.
 
+    Args:
+        include_items: Optional override for whole-menu item display.
 
-def format_menu_categories(include_items: bool = True) -> str:
-    data = get_menu_categories(include_items=include_items)
-    lines = ["Here is the complete menu category list:"]
+    Returns:
+        ToolResult.ok(display_text=...) with the exact customer-facing menu
+        browsing response.
 
-    for top_level in data["top_level_categories"]:
-        lines.extend(["", f"{top_level}:"])
-        for category in data["categories"]:
-            if category["top_level"] != top_level:
-                continue
-            if include_items:
-                items = ", ".join(category["items"])
-                lines.append(f"- {category['name']}: {items}")
-            else:
-                lines.append(f"- {category['name']}")
+    Example:
+        browse_current_menu_request()
+    """
+    query = _CURRENT_PRODUCT_QUERY.get()
+    if not query:
+        return wrap(ToolResult.fail("No active Product Search request to browse."))
 
-    return "\n".join(lines)
+    response = await browse_menu(query=query, include_items=include_items)
+    _remember_menu_scope(query)
+    return response
 
 
-async def list_menu_categories(include_items: bool = True) -> ToolResponse:
+async def filter_current_menu_by_price() -> ToolResponse:
+    """Filter menu items by the price limit in the original Product Search request.
+
+    Use this for budget requests such as "items under 100", "drinks below 200",
+    or "food under INR 300". The price limit and optional category scope are
+    parsed from the original request so the model does not have to do numeric
+    filtering from retrieved chunks.
+
+    Returns:
+        ToolResult.ok(display_text=..., items=..., max_price=...).
+
+    Example:
+        filter_current_menu_by_price()
+    """
+    query = _CURRENT_PRODUCT_QUERY.get()
+    if not query:
+        return wrap(ToolResult.fail("No active Product Search request to filter."))
+
+    query = _query_with_last_scope(query)
+    max_price = extract_price_limit(query)
+    if max_price is None:
+        return wrap(ToolResult.fail("No price limit found in the current request."))
+
+    items = filter_price_items(max_price=max_price, query=query)
+    return wrap(
+        ToolResult.ok(
+            display_text=format_price_filter_query(query, max_price=max_price),
+            max_price=max_price,
+            items=[item.as_dict() for item in items],
+            count=len(items),
+        )
+    )
+
+
+async def list_current_menu_prices() -> ToolResponse:
+    """List menu prices for the original Product Search request.
+
+    Use this when the user asks for prices without a max/min budget, such as
+    "show prices", "prices for all coffees", "pizza prices", or a follow-up
+    like "show the prices for all".
+
+    Returns:
+        ToolResult.ok(display_text=..., items=..., count=...).
+
+    Example:
+        list_current_menu_prices()
+    """
+    query = _CURRENT_PRODUCT_QUERY.get()
+    if not query:
+        return wrap(ToolResult.fail("No active Product Search request to price."))
+
+    query = _query_with_last_scope(query)
+    if not is_price_list_request(query):
+        return wrap(
+            ToolResult.fail(
+                "The current request does not ask for prices. "
+                "Use browse_current_menu_request for menu browsing."
+            )
+        )
+
+    items = price_items_for_query(query)
+    return wrap(
+        ToolResult.ok(
+            display_text=format_price_list_query(query),
+            items=[item.as_dict() for item in items],
+            count=len(items),
+        )
+    )
+
+
+async def list_menu_categories(
+    include_items: bool = False,
+    include_structured: bool = False,
+) -> ToolResponse:
     """List menu categories from the canonical menu document.
 
     Args:
         include_items: When true, include item names under each category.
+            The default is false so first menu-browsing replies show sections
+            only.
+        include_structured: When true, include structured category data.
 
     Returns:
-        ToolResult.ok(display_text=..., top_level_categories=..., categories=...).
+        ToolResult.ok(display_text=...) by default. Structured category data is
+        included only when include_structured is true.
 
     Example:
-        list_menu_categories(include_items=True)
+        list_menu_categories(include_items=False)
     """
     try:
-        return wrap(
-            ToolResult.ok(
-                display_text=format_menu_categories(include_items=include_items),
-                **get_menu_categories(include_items=include_items),
-            )
-        )
+        data = {"display_text": format_menu_categories(include_items=include_items)}
+        if include_structured:
+            data.update(get_menu_categories(include_items=include_items))
+        return wrap(ToolResult.ok(**data))
     except Exception as e:
         return wrap(ToolResult.fail(f"Menu category index error: {e}"))
+
+
+async def list_menu_section_items(section_name: str) -> ToolResponse:
+    """List item names inside one menu section or section group.
+
+    Args:
+        section_name: Section name from the menu, such as "Coffees",
+            "Mocktails", "Wraps", or a group alias like "drinks".
+
+    Returns:
+        ToolResult.ok(display_text=...) with the matching section item list.
+
+    Example:
+        list_menu_section_items(section_name="Coffees")
+    """
+    try:
+        return wrap(ToolResult.ok(display_text=format_menu_section_items(section_name)))
+    except Exception as e:
+        return wrap(ToolResult.fail(f"Menu section item error: {e}"))
 
 
 async def search_products(query: str, max_results: int = 5) -> ToolResponse:
