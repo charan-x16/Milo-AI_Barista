@@ -2,7 +2,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from cafe.core.control_loop import _build_context, run_turn
+from cafe.core.turn_runtime import _build_context, run_turn
 
 
 @pytest.mark.asyncio
@@ -28,51 +28,48 @@ async def test_agent_exception_is_handled(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_deterministic_menu_turn_skips_orchestrator(monkeypatch):
-    class BadAgent:
-        memory = type("M", (), {"get_memory": lambda self: []})()
+async def test_product_menu_turn_uses_orchestrator_and_specialist_passthrough(monkeypatch):
+    specialist_reply = "Of course. Here are the menu sections:\n\nBeverages:\n- Coffee Fusions"
+
+    class ProductMenuAgent:
+        def __init__(self):
+            self.messages = []
+            self.memory = SimpleNamespace(get_memory=lambda: self.messages)
 
         async def __call__(self, msg):
-            raise AssertionError("orchestrator should not be called")
+            self.messages.append(
+                SimpleNamespace(content=[
+                    {
+                        "type": "tool_use",
+                        "name": "ask_product_agent",
+                        "input": {"query": "show the menu please"},
+                    },
+                    {
+                        "type": "tool_result",
+                        "name": "ask_product_agent",
+                        "output": [{"type": "text", "text": specialist_reply}],
+                    },
+                ])
+            )
+            return SimpleNamespace(content="Here are a few categories.")
 
     from cafe.agents import session_manager as sm
 
     monkeypatch.setattr(
         sm.SessionManager,
         "get_or_create",
-        lambda self, session_id: BadAgent(),
+        lambda self, session_id: ProductMenuAgent(),
     )
 
     out = await run_turn("s1", "show the menu please")
 
-    assert "Here are the menu sections:" in out["reply"]
-    assert "Coffee Fusions" in out["reply"]
-    assert out["tool_calls"][0]["name"] == "browse_current_menu_request"
-
-
-@pytest.mark.asyncio
-async def test_deterministic_section_turn_remembers_scope_for_price_followup(monkeypatch):
-    class BadAgent:
-        memory = type("M", (), {"get_memory": lambda self: []})()
-
-        async def __call__(self, msg):
-            raise AssertionError("orchestrator should not be called")
-
-    from cafe.agents import session_manager as sm
-
-    monkeypatch.setattr(
-        sm.SessionManager,
-        "get_or_create",
-        lambda self, session_id: BadAgent(),
-    )
-
-    first = await run_turn("s-scope", "show me the coffees")
-    second = await run_turn("s-scope", "cool show me the prices of it")
-
-    assert "Here are the items under Coffees:" in first["reply"]
-    assert "Here are the prices for Coffees:" in second["reply"]
-    assert "Espresso - " in second["reply"]
-    assert "Tonic Espresso" not in second["reply"]
+    assert out["reply"] == specialist_reply
+    assert out["tool_calls"] == [
+        {
+            "name": "ask_product_agent",
+            "input": {"query": "show the menu please"},
+        }
+    ]
 
 
 @pytest.mark.asyncio
@@ -109,7 +106,7 @@ def test_context_includes_cart(store):
     ctx = _build_context("s1")
 
     assert "[session_id=s1]" in ctx
-    assert "₹180" in ctx
+    assert "INR 180" in ctx
 
 
 def test_context_no_cart_no_orders():
@@ -120,8 +117,8 @@ def test_context_no_cart_no_orders():
 
 
 @pytest.mark.asyncio
-async def test_product_only_menu_turn_uses_deterministic_reply(monkeypatch):
-    specialist_reply = "this should not be used"
+async def test_product_only_menu_turn_uses_current_specialist_reply(monkeypatch):
+    specialist_reply = "Here are the items under Coffees:\n- Espresso\n- Affogato"
 
     class ProductOnlyAgent:
         def __init__(self):
@@ -155,9 +152,13 @@ async def test_product_only_menu_turn_uses_deterministic_reply(monkeypatch):
 
     out = await run_turn("s1", "show the menu")
 
-    assert "Here are the menu sections:" in out["reply"]
-    assert "- Coffee Fusions" in out["reply"]
-    assert out["tool_calls"][0]["name"] == "browse_current_menu_request"
+    assert out["reply"] == specialist_reply
+    assert out["tool_calls"] == [
+        {
+            "name": "ask_product_agent",
+            "input": {"query": "Show me the menu"},
+        }
+    ]
 
 
 @pytest.mark.parametrize(
@@ -319,17 +320,11 @@ async def test_product_passthrough_uses_only_current_turn_tools(monkeypatch):
 
     out = await run_turn("s1", "what pizzas do you have?")
 
-    assert "Here are the items under Pizzas:" in out["reply"]
-    assert "- Margherita Pizza" in out["reply"]
-    assert "- Kentucky Crunch Chicken Pizza" in out["reply"]
+    assert out["reply"] == current_reply
     assert out["tool_calls"] == [
         {
-            "name": "browse_current_menu_request",
-            "input": {
-                "query": "what pizzas do you have?",
-                "response_kind": "section_items",
-                "requested_section": "Pizzas",
-            },
+            "name": "ask_product_agent",
+            "input": {"query": "Show pizzas"},
         }
     ]
 
@@ -372,3 +367,116 @@ async def test_single_specialist_passthrough_does_not_inspect_response_text(monk
     out = await run_turn("s1", "any desserts?")
 
     assert out["reply"] == specialist_reply
+
+
+@pytest.mark.asyncio
+async def test_product_final_reply_preserves_specialist_wording(monkeypatch):
+    class NaturalProductAgent:
+        def __init__(self):
+            self.messages = []
+            self.memory = SimpleNamespace(get_memory=lambda: self.messages)
+
+        async def __call__(self, msg):
+            self.messages.append(
+                SimpleNamespace(content=[
+                    {
+                        "type": "tool_use",
+                        "name": "ask_product_agent",
+                        "input": {"query": "what do you recommend?"},
+                    },
+                    {
+                            "type": "tool_result",
+                            "name": "ask_product_agent",
+                            "output": [{"type": "text", "text": "We have many options. Would you like to explore?"}],
+                    },
+                ])
+            )
+            return SimpleNamespace(content="We have many options.")
+
+    from cafe.agents import session_manager as sm
+
+    monkeypatch.setattr(
+        sm.SessionManager,
+        "get_or_create",
+        lambda self, session_id: NaturalProductAgent(),
+    )
+
+    out = await run_turn("s1", "what do you recommend?")
+
+    assert out["reply"] == "We have many options. Would you like to explore?"
+
+
+@pytest.mark.asyncio
+async def test_product_final_reply_is_not_rewritten(monkeypatch):
+    class ProductAgent:
+        def __init__(self):
+            self.messages = []
+            self.memory = SimpleNamespace(get_memory=lambda: self.messages)
+
+        async def __call__(self, msg):
+            self.messages.append(
+                SimpleNamespace(content=[
+                    {
+                        "type": "tool_use",
+                        "name": "ask_product_agent",
+                        "input": {"query": "dessert"},
+                    },
+                    {
+                        "type": "tool_result",
+                        "name": "ask_product_agent",
+                        "output": [{"type": "text", "text": "Here are dessert items:\n- Unicorn Cake"}],
+                    },
+                ])
+            )
+            return SimpleNamespace(content="Here are dessert items:\n- Unicorn Cake")
+
+    from cafe.agents import session_manager as sm
+
+    monkeypatch.setattr(
+        sm.SessionManager,
+        "get_or_create",
+        lambda self, session_id: ProductAgent(),
+    )
+
+    out = await run_turn("s1", "dessert")
+
+    assert out["reply"] == "Here are dessert items:\n- Unicorn Cake"
+
+
+@pytest.mark.asyncio
+async def test_single_product_agent_reply_beats_orchestrator_summary(monkeypatch):
+    product_agent_reply = "I found the menu sections for you. Beverages include Coffees and Mocktails."
+
+    class SummarizingProductAgent:
+        def __init__(self):
+            self.messages = []
+            self.memory = SimpleNamespace(get_memory=lambda: self.messages)
+
+        async def __call__(self, msg):
+            self.messages.append(
+                SimpleNamespace(content=[
+                    {
+                        "type": "tool_use",
+                        "name": "ask_product_agent",
+                        "input": {"query": "Show the menu"},
+                    },
+                    {
+                            "type": "tool_result",
+                            "name": "ask_product_agent",
+                            "output": [{"type": "text", "text": product_agent_reply}],
+                    },
+                ])
+            )
+            return SimpleNamespace(content="Here are our menu sections:")
+
+    from cafe.agents import session_manager as sm
+
+    monkeypatch.setattr(
+        sm.SessionManager,
+        "get_or_create",
+        lambda self, session_id: SummarizingProductAgent(),
+    )
+
+    out = await run_turn("s1", "show me the menu")
+
+    assert out["reply"] == product_agent_reply

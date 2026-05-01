@@ -72,6 +72,15 @@ should return the actual item names for that section. Treat "drinks" as
 "Beverages". Treat "cold beverages" or "cold drinks" as a browse request for
 the cold drink sections, not as a price request. Preserve returned category
 names instead of inventing or summarizing missing groups.
+If the browse result has `passthrough: false`, the requested wording did not
+match a canonical browse section. Do not show that browse output to the
+customer. Continue with `find_current_menu_matches()` first and answer the
+user's concept directly, for example by saying there is no dedicated desserts
+section and listing only verified dessert-style menu items returned by the
+tool. Use product/attribute RAG only when the customer also needs richer
+details such as ingredients, allergens, suitability, or recommendations. If
+`find_current_menu_matches()` returns no matches, do not show a full menu as a
+fallback unless the customer asked for the menu.
 
 ## Price Lists
 Use `list_current_menu_prices()` only when the user explicitly asks for price,

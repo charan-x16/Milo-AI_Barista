@@ -16,7 +16,7 @@ from cafe.agents.specialist_tools import reset_specialists
 from cafe.api.debug import router as debug_router
 from cafe.api.schemas import ChatRequest, ChatResponse
 from cafe.config import get_settings
-from cafe.core.control_loop import run_turn
+from cafe.core.turn_runtime import run_turn
 from cafe.core.debug_trace import get_debug_trace_store
 from cafe.core.state import get_store, reset_store
 

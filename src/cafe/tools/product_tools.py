@@ -14,12 +14,16 @@ from cafe.services.menu_index_service import (
     format_price_filter_query,
     browse_menu_query,
     format_menu_categories,
+    format_menu_item_matches,
+    format_menu_recommendations,
     format_menu_section_items,
     get_menu_categories,
     is_context_dependent_price_request,
     is_price_list_request,
     price_items_for_query,
+    recommend_menu_items,
     requested_section_from_query,
+    search_menu_item_matches,
 )
 from cafe.services.rag_service import RagHit, build_rag_service, rag_sources
 from cafe.tools._wrap import wrap
@@ -210,6 +214,74 @@ async def list_current_menu_prices() -> ToolResponse:
             count=len(items),
         )
     )
+
+
+async def find_current_menu_matches(max_results: int = 5) -> ToolResponse:
+    """Find canonical menu items that match the current product request.
+
+    Use this for concept or preference requests that are not exact menu
+    sections, such as "any desserts", "something sweet", "light drinks",
+    "chocolate options", or "creamy coffee". It searches structured item
+    names, sections, tags, serving notes, dietary tags, descriptions, and
+    match aliases from the canonical menu document.
+
+    Args:
+        max_results: Maximum number of matching menu items to return.
+
+    Returns:
+        ToolResult.ok(display_text=..., items=..., count=...).
+
+    Example:
+        find_current_menu_matches(max_results=4)
+    """
+    query = _CURRENT_PRODUCT_QUERY.get()
+    if not query:
+        return wrap(ToolResult.fail("No active Product Search request to match."))
+
+    try:
+        items = search_menu_item_matches(query, max_results=max_results)
+        return wrap(
+            ToolResult.ok(
+                display_text=format_menu_item_matches(query, max_results=max_results),
+                items=[item.as_dict() for item in items],
+                count=len(items),
+                response_kind="item_matches",
+                passthrough=bool(items),
+            )
+        )
+    except Exception as e:
+        return wrap(ToolResult.fail(f"Menu item match error: {e}"))
+
+
+async def recommend_current_menu_items(max_results: int = 5) -> ToolResponse:
+    """Return data-derived representative menu recommendations.
+
+    The selection is generated from the canonical menu document by alternating
+    through top-level groups and sections in document order. It does not use
+    manually selected item names or category names.
+
+    Args:
+        max_results: Maximum number of menu items to return.
+
+    Returns:
+        ToolResult.ok(display_text=..., items=..., count=...).
+
+    Example:
+        recommend_current_menu_items(max_results=5)
+    """
+    try:
+        items = recommend_menu_items(max_results=max_results)
+        return wrap(
+            ToolResult.ok(
+                display_text=format_menu_recommendations(max_results=max_results),
+                items=[item.as_dict() for item in items],
+                count=len(items),
+                response_kind="recommendations",
+                passthrough=bool(items),
+            )
+        )
+    except Exception as e:
+        return wrap(ToolResult.fail(f"Menu recommendation error: {e}"))
 
 
 async def list_menu_categories(

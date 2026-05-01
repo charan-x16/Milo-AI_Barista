@@ -4,9 +4,7 @@ The Orchestrator's toolkit is built from these. Specialists are short-lived
 because cart/order state lives in StateStore, not in specialist chat memory.
 """
 
-import json
 from contextvars import ContextVar
-from inspect import isawaitable
 
 from agentscope.message import Msg, TextBlock
 from agentscope.tool import ToolResponse
@@ -75,7 +73,7 @@ def _is_context_dependent_followup(text: str) -> bool:
 
 
 def _current_product_tool_query(query: str) -> str:
-    """Prefer the raw user wording for deterministic Product tools.
+    """Prefer the raw user wording for canonical Product tools.
 
     The Orchestrator may broaden "show me the coffee" into "show coffee
     options". Direct menu browsing needs the user's exact words, while short
@@ -104,76 +102,18 @@ def _extract_text_blocks(content) -> str:
     return text
 
 
-async def _latest_display_text_from_tool(agent, tool_names: set[str]) -> str | None:
-    try:
-        msgs = agent.memory.get_memory()
-        if isawaitable(msgs):
-            msgs = await msgs
-    except Exception:
-        return None
-
-    for msg in reversed(msgs[-12:]):
-        content = getattr(msg, "content", []) or []
-        if isinstance(content, str):
-            continue
-
-        for block in reversed(content):
-            block_type = block.get("type") if isinstance(block, dict) else getattr(block, "type", None)
-            block_name = block.get("name") if isinstance(block, dict) else getattr(block, "name", None)
-            if block_type != "tool_result":
-                continue
-
-            output = block.get("output") if isinstance(block, dict) else getattr(block, "output", None)
-            raw_text = _extract_text_blocks(output)
-            try:
-                payload = json.loads(raw_text)
-            except json.JSONDecodeError:
-                # Skill/helper tools can emit plain text after an answer tool.
-                # They are not customer-facing answer evidence, so ignore them.
-                continue
-
-            if block_name not in tool_names:
-                return None
-
-            if payload.get("success") is True:
-                data = payload.get("data") or {}
-                if data.get("passthrough") is False:
-                    return None
-                display_text = data.get("display_text")
-                if display_text:
-                    return str(display_text)
-
-    return None
-
-
-async def _ask(agent, query: str) -> ToolResponse:
-    """Send a query to a specialist and wrap its reply as a ToolResponse."""
-    reply = await agent(Msg(name="orchestrator", content=query, role="user"))
-    display_text = await _latest_display_text_from_tool(
-        agent,
-        {
-            "browse_current_menu_request",
-            "browse_menu",
-            "filter_current_menu_by_price",
-            "list_current_menu_prices",
-            "list_menu_categories",
-            "list_menu_section_items",
-        },
-    )
-    if display_text:
-        return ToolResponse(content=[TextBlock(type="text", text=display_text)])
-
+def _extract_reply_text(reply) -> str:
     content = getattr(reply, "content", "") or ""
 
     if isinstance(content, str):
-        text = content
-    else:
-        text = ""
-        for block in content:
-            if isinstance(block, dict) and block.get("type") == "text":
-                text += block.get("text", "")
-            elif getattr(block, "type", None) == "text":
-                text += getattr(block, "text", "")
+        return content
+    return _extract_text_blocks(content)
+
+
+async def _ask(agent, query: str) -> ToolResponse:
+    """Send a query to a specialist and wrap the specialist's final reply."""
+    reply = await agent(Msg(name="orchestrator", content=query, role="user"))
+    text = _extract_reply_text(reply)
 
     if text.strip():
         return ToolResponse(content=[TextBlock(type="text", text=text)])

@@ -28,6 +28,13 @@
 - **cold drink:** Cold Brews, Cold Coffees, Shakes, Iced Teas, Mocktails
 - **cold drinks:** Cold Brews, Cold Coffees, Shakes, Iced Teas, Mocktails
 
+### Match Aliases
+
+- **after food:** dessert
+- **after meal:** dessert
+- **post meal:** dessert
+- **sweet tooth:** sweet
+
 ### Beverages
 
 - **Coffees:** Espresso, Doppio, Americano, Long Black, Cortado, Cappuccino, Latte, Flat White, Vietnamese Coffee, Mocha, Affogato

@@ -1,14 +1,11 @@
-"""One user message -> one assistant reply.
+"""Agent turn runtime.
 
-7-step flow:
-  1. task_classification  - Orchestrator's first ReAct thought
-  2. context_retrieval    - _build_context (cart snapshot, recent orders)
-  3. planning             - built into ReAct loop
-  4. execution loop       - await orchestrator(msg)
-  5. tool_calls           - specialists call domain tools
-  6. validation           - services raise; tools wrap as fail; (TODO: critic)
-  7. state_update + output - assemble reply
+The runtime does not answer menu questions itself. It supplies session context,
+lets the Orchestrator route to specialists, extracts the specialist result, and
+returns that result when a single specialist owns the turn.
 """
+
+from __future__ import annotations
 
 import logging
 from inspect import isawaitable
@@ -16,15 +13,14 @@ from typing import Any
 
 from agentscope.message import Msg
 
+from cafe.agents.session_manager import get_session_manager
 from cafe.agents.specialist_tools import (
     reset_current_session_id,
     reset_current_user_request,
     set_current_session_id,
     set_current_user_request,
 )
-from cafe.agents.session_manager import get_session_manager
 from cafe.core.debug_trace import get_debug_trace_store
-from cafe.core.deterministic_menu import deterministic_menu_reply
 from cafe.core.state import get_store
 
 
@@ -43,9 +39,8 @@ SPECIALIST_TOOLS = {
 }
 
 
-# Step 2: context retrieval
 def _build_context(session_id: str) -> str:
-    """Compact snapshot the Orchestrator can read at the top of the turn."""
+    """Compact snapshot the Orchestrator can use for routing."""
     store = get_store()
     cart = store.get_cart(session_id)
     recent_orders = [
@@ -54,7 +49,7 @@ def _build_context(session_id: str) -> str:
     parts = [f"[session_id={session_id}]"]
 
     if not cart.is_empty():
-        parts.append(f"[cart: {len(cart.items)} item(s), ₹{cart.total_inr}]")
+        parts.append(f"[cart: {len(cart.items)} item(s), INR {cart.total_inr}]")
 
     if recent_orders:
         ids = ", ".join(f"{order.order_id}({order.status})" for order in recent_orders)
@@ -63,7 +58,6 @@ def _build_context(session_id: str) -> str:
     return " ".join(parts)
 
 
-# Helpers
 def _extract_text(msg) -> str:
     content = getattr(msg, "content", "") or ""
     if isinstance(content, str):
@@ -138,19 +132,11 @@ def _extract_tool_results_from_messages(msgs: list) -> list[dict]:
     return results
 
 
-async def _extract_tool_calls(agent) -> list[dict]:
-    return _extract_tool_calls_from_messages((await _get_agent_memory(agent))[-12:])
-
-
-async def _extract_tool_results(agent) -> list[dict]:
-    return _extract_tool_results_from_messages((await _get_agent_memory(agent))[-12:])
-
-
-def _single_specialist_passthrough(
+def _single_specialist_result(
     tool_calls: list[dict],
     tool_results: list[dict],
 ) -> str | None:
-    """Return specialist output directly for single-specialist turns."""
+    """Return the specialist answer for a single-specialist turn."""
     if len(tool_calls) != 1:
         return None
 
@@ -165,13 +151,23 @@ def _single_specialist_passthrough(
     return None
 
 
-# The 7-step turn
+def _assemble_reply(
+    raw_orchestrator_reply: str,
+    tool_calls: list[dict],
+    tool_results: list[dict],
+) -> tuple[str, str]:
+    specialist_result = _single_specialist_result(tool_calls, tool_results)
+    if specialist_result:
+        return specialist_result, "specialist_result"
+    return raw_orchestrator_reply, "orchestrator"
+
+
 async def run_turn(
     session_id: str,
     user_text: str,
     enable_critic: bool = False,
 ) -> dict[str, Any]:
-    """Execute one user->orchestrator->specialists->reply turn."""
+    """Route one user message and return the owning agent/tool answer."""
     trace = get_debug_trace_store()
     turn_id = trace.start_turn(session_id, user_text)
     trace.add_event(turn_id, "api", "running", "Chat request accepted")
@@ -185,7 +181,6 @@ async def run_turn(
         {"agent_name": getattr(orchestrator, "name", "Orchestrator")},
     )
 
-    # Step 2: build context, prepend to user message
     context = _build_context(session_id)
     trace.set_context(turn_id, context)
     trace.add_event(
@@ -196,37 +191,14 @@ async def run_turn(
         {"context": context},
     )
 
-    deterministic_reply = deterministic_menu_reply(session_id, user_text)
-    if deterministic_reply:
-        trace.add_event(
-            turn_id,
-            "deterministic_menu",
-            "complete",
-            "Answered from canonical menu index without LLM",
-            {"route": deterministic_reply.route},
-        )
-        trace.finish_turn(
-            turn_id,
-            "complete",
-            deterministic_reply.reply,
-            deterministic_reply.tool_calls,
-            None,
-        )
-        return {
-            "reply": deterministic_reply.reply,
-            "tool_calls": deterministic_reply.tool_calls,
-            "critique": None,
-        }
-
     msg = Msg(name="user", content=f"{context} {user_text}", role="user")
     memory_before = await _get_agent_memory(orchestrator)
     memory_before_count = len(memory_before)
 
-    # Steps 3, 4, 5: planning + execution + tool calls (handled by ReAct)
     user_request_token = set_current_user_request(user_text)
     session_token = set_current_session_id(session_id)
     try:
-        trace.add_event(turn_id, "orchestrator", "running", "Calling ReAct agent")
+        trace.add_event(turn_id, "orchestrator", "running", "Routing request")
         reply_msg = await orchestrator(msg)
     except Exception as e:
         log.exception("orchestrator failed")
@@ -248,13 +220,10 @@ async def run_turn(
         reset_current_user_request(user_request_token)
         reset_current_session_id(session_token)
 
-    # Step 7: assemble reply
-    trace.add_event(turn_id, "orchestrator", "complete", "Agent returned a reply")
-    reply = _extract_text(reply_msg)
+    trace.add_event(turn_id, "orchestrator", "complete", "Routing complete")
+    raw_orchestrator_reply = _extract_text(reply_msg)
     memory_after = await _get_agent_memory(orchestrator)
-    current_turn_messages = memory_after[memory_before_count:]
-    if not current_turn_messages:
-        current_turn_messages = memory_after[-12:]
+    current_turn_messages = memory_after[memory_before_count:] or memory_after[-12:]
     tool_calls = _extract_tool_calls_from_messages(current_turn_messages)
     tool_results = _extract_tool_results_from_messages(current_turn_messages)
     trace.add_event(
@@ -264,22 +233,12 @@ async def run_turn(
         f"Extracted {len(tool_calls)} tool call(s)",
         {"tool_calls": tool_calls},
     )
-    mutated = any(call["name"] in MUTATING_TOOLS for call in tool_calls)
-    passthrough_reply = _single_specialist_passthrough(tool_calls, tool_results)
-    if passthrough_reply:
-        reply = passthrough_reply
-        trace.add_event(
-            turn_id,
-            "response",
-            "running",
-            "Using single specialist response directly",
-        )
 
-    # Step 6: validation hook (Phase 2)
+    reply, source = _assemble_reply(raw_orchestrator_reply, tool_calls, tool_results)
+
+    mutated = any(call["name"] in MUTATING_TOOLS for call in tool_calls)
     critique_payload = None
     if enable_critic and mutated:
-        # TODO Phase 2: from cafe.core.critic import critique
-        # critique_payload = (await critique(user_text, reply, tool_calls)).model_dump()
         critique_payload = {"verdict": "PASS", "reason": "critic not yet enabled"}
         trace.add_event(
             turn_id,
@@ -297,6 +256,13 @@ async def run_turn(
             {"enable_critic": enable_critic, "mutated": mutated},
         )
 
-    trace.add_event(turn_id, "response", "complete", "Final response assembled")
+    trace.add_event(
+        turn_id,
+        "response",
+        "complete",
+        "Final response assembled",
+        {"source": source},
+    )
+    log.info("Final response source=%s preview=%r", source, reply[:160])
     trace.finish_turn(turn_id, "complete", reply, tool_calls, critique_payload)
     return {"reply": reply, "tool_calls": tool_calls, "critique": critique_payload}

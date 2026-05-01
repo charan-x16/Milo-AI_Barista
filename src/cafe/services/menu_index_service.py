@@ -81,6 +81,40 @@ class MenuPriceItem:
 
 
 @dataclass(frozen=True)
+class MenuItemMatch:
+    name: str
+    section: str
+    top_level: str
+    price: str | None
+    serving: str | None
+    dietary_tags: str | None
+    tags: tuple[str, ...]
+    description: str | None
+    matched_terms: tuple[str, ...]
+    score: int
+
+    def as_dict(self) -> dict[str, object]:
+        data: dict[str, object] = {
+            "name": self.name,
+            "section": self.section,
+            "top_level": self.top_level,
+            "matched_terms": list(self.matched_terms),
+            "score": self.score,
+        }
+        if self.price:
+            data["price"] = self.price
+        if self.serving:
+            data["serving"] = self.serving
+        if self.dietary_tags:
+            data["dietary_tags"] = self.dietary_tags
+        if self.tags:
+            data["tags"] = list(self.tags)
+        if self.description:
+            data["description"] = self.description
+        return data
+
+
+@dataclass(frozen=True)
 class MenuBrowseResult:
     display_text: str
     response_kind: str
@@ -125,6 +159,10 @@ def _parse_markdown_table_row(line: str) -> list[str]:
 def _parse_price(value: str) -> int | None:
     match = re.search(r"\d+", value)
     return int(match.group(0)) if match else None
+
+
+def _clean_price_text(value: str) -> str:
+    return re.sub(r"[^\d/() A-Za-z.+-]+", " ", value).strip()
 
 
 def _next_content_line(lines: list[str], start_index: int) -> str:
@@ -221,6 +259,107 @@ def build_menu_index(menu_doc_path: str | None = None) -> MenuIndex:
 
 
 @lru_cache
+def build_menu_match_aliases(menu_doc_path: str | None = None) -> dict[str, tuple[str, ...]]:
+    path = Path(menu_doc_path) if menu_doc_path else DEFAULT_MENU_DOC_PATH
+    aliases: dict[str, tuple[str, ...]] = {}
+    in_aliases = False
+
+    for raw_line in path.read_text(encoding="utf-8").splitlines():
+        line = raw_line.strip()
+        if line == "### Match Aliases":
+            in_aliases = True
+            continue
+        if in_aliases and (line.startswith("### ") or line.startswith("## ")):
+            break
+        if not in_aliases:
+            continue
+
+        parsed_alias = _parse_alias_line(line)
+        if parsed_alias:
+            alias, targets = parsed_alias
+            aliases[alias] = tuple(_phrase_normalize(target) for target in targets)
+
+    return aliases
+
+
+@lru_cache
+def build_menu_item_match_index(menu_doc_path: str | None = None) -> tuple[MenuItemMatch, ...]:
+    path = Path(menu_doc_path) if menu_doc_path else DEFAULT_MENU_DOC_PATH
+    lines = path.read_text(encoding="utf-8").splitlines()
+    section_path: tuple[str, ...] | None = None
+    current_name: str | None = None
+    current_fields: dict[str, str] = {}
+    items: list[MenuItemMatch] = []
+
+    def flush_current() -> None:
+        nonlocal current_name, current_fields
+        if current_name is None or section_path is None:
+            current_name = None
+            current_fields = {}
+            return
+
+        tags_text = current_fields.get("tags", "")
+        tags = tuple(tag.strip() for tag in tags_text.split(",") if tag.strip())
+        items.append(
+            MenuItemMatch(
+                name=current_name,
+                section=" > ".join(section_path[1:]),
+                top_level=section_path[0],
+                price=_clean_price_text(current_fields.get("price", "")) or None,
+                serving=current_fields.get("serving"),
+                dietary_tags=current_fields.get("dietary tags"),
+                tags=tags,
+                description=current_fields.get("description"),
+                matched_terms=(),
+                score=0,
+            )
+        )
+        current_name = None
+        current_fields = {}
+
+    for index, raw_line in enumerate(lines):
+        line = raw_line.strip()
+
+        if line.startswith("## ") and " > " in line[3:]:
+            flush_current()
+            section_path = tuple(part.strip() for part in line[3:].split(">"))
+            continue
+
+        if section_path is None:
+            continue
+
+        if line.startswith("## "):
+            flush_current()
+            section_path = None
+            continue
+
+        if line.startswith("### "):
+            next_line = _next_content_line(lines, index + 1)
+            if next_line.startswith("#### "):
+                continue
+            flush_current()
+            current_name = line[4:].strip()
+            current_fields = {}
+            continue
+
+        if line.startswith("#### "):
+            flush_current()
+            current_name = line[5:].strip()
+            current_fields = {}
+            continue
+
+        if current_name is None:
+            continue
+
+        match = re.match(r"- \*\*(.+?):\*\*\s*(.+)$", line)
+        if match:
+            current_fields[_phrase_normalize(match.group(1))] = match.group(2).strip()
+
+    flush_current()
+    return tuple(items)
+
+
+@lru_cache
 def build_menu_price_index(menu_doc_path: str | None = None) -> tuple[MenuPriceItem, ...]:
     path = Path(menu_doc_path) if menu_doc_path else DEFAULT_MENU_DOC_PATH
     lines = path.read_text(encoding="utf-8").splitlines()
@@ -278,6 +417,429 @@ def build_menu_price_index(menu_doc_path: str | None = None) -> tuple[MenuPriceI
             )
 
     return tuple(items)
+
+
+_MATCH_STOPWORDS = {
+    "a",
+    "about",
+    "all",
+    "and",
+    "any",
+    "are",
+    "available",
+    "can",
+    "current",
+    "do",
+    "for",
+    "have",
+    "i",
+    "is",
+    "list",
+    "me",
+    "menu",
+    "of",
+    "on",
+    "option",
+    "options",
+    "please",
+    "show",
+    "some",
+    "something",
+    "the",
+    "there",
+    "to",
+    "what",
+    "with",
+    "you",
+}
+
+_MENU_OVERVIEW_TERMS = {
+    "categories",
+    "category",
+    "complete",
+    "entire",
+    "full",
+    "menu",
+    "section",
+    "sections",
+    "whole",
+}
+
+
+def _menu_item_by_name(menu_doc_path: str | None = None) -> dict[str, MenuItemMatch]:
+    return {item.name: item for item in build_menu_item_match_index(menu_doc_path)}
+
+
+def _query_match_terms(query: str) -> tuple[str, ...]:
+    words = [
+        word for word in _phrase_normalize(query).split()
+        if len(word) > 2 and word not in _MATCH_STOPWORDS
+    ]
+    terms: list[str] = []
+    for word in words:
+        if word.endswith("ies") and len(word) > 4:
+            term = f"{word[:-3]}y"
+        elif word.endswith("s") and len(word) > 3:
+            term = word[:-1]
+        else:
+            term = word
+        if term and term not in terms:
+            terms.append(term)
+    return tuple(terms)
+
+
+def _expanded_query_match_terms(
+    query: str,
+    *,
+    menu_doc_path: str | None = None,
+) -> tuple[str, ...]:
+    terms = list(_query_match_terms(query))
+    text = _phrase_normalize(query)
+
+    for alias, targets in build_menu_match_aliases(menu_doc_path).items():
+        if not _contains_phrase(text, alias):
+            continue
+
+        alias_terms = set(_query_match_terms(alias))
+        terms = [term for term in terms if term not in alias_terms]
+        for target in targets:
+            for term in _query_match_terms(target):
+                if term not in terms:
+                    terms.append(term)
+
+    return tuple(terms)
+
+
+def _terms_for_text(value: str) -> set[str]:
+    return set(_query_match_terms(value))
+
+
+def _section_matches_for_labels(labels: tuple[str, ...]) -> tuple[MenuSection, ...]:
+    matches: list[MenuSection] = []
+    seen: set[tuple[str, ...]] = set()
+    for label in labels:
+        for section in resolve_sections(label):
+            if section.path in seen:
+                continue
+            matches.append(section)
+            seen.add(section.path)
+    return tuple(matches)
+
+
+def _requested_sections_from_query(query: str) -> tuple[str, ...]:
+    index = build_menu_index()
+    text = _phrase_normalize(query)
+    candidates: list[tuple[str, str, tuple[MenuSection, ...]]] = []
+
+    matched_aliases = [
+        alias for alias in sorted(index.aliases, key=len, reverse=True)
+        if _contains_phrase(text, _phrase_normalize(alias))
+    ]
+
+    for alias in matched_aliases:
+        normalized_alias = _phrase_normalize(alias)
+        if any(
+            alias != other
+            and _contains_phrase(_phrase_normalize(other), normalized_alias)
+            for other in matched_aliases
+        ):
+            continue
+        sections = resolve_sections(alias)
+        if sections:
+            exact_singular_sections = tuple(
+                section for section in sections
+                if _normalize(section.name).removesuffix("s") == normalized_alias
+                or _normalize(section.path[-1]).removesuffix("s") == normalized_alias
+            )
+            broad_alias = any(
+                _contains_phrase(text, word)
+                for word in ("all", "option", "options")
+            )
+            if not broad_alias and len(exact_singular_sections) == 1:
+                section = exact_singular_sections[0]
+                candidates.append((section.name, normalized_alias, (section,)))
+            else:
+                candidates.append((alias, normalized_alias, sections))
+
+    for section in sorted(index.sections, key=lambda item: len(item.name), reverse=True):
+        variants = {
+            _phrase_normalize(section.name),
+            _phrase_normalize(section.path[-1]),
+            _phrase_normalize(" ".join(section.path[1:])),
+        }
+        variants.update(
+            variant.removesuffix("s")
+            for variant in list(variants)
+            if variant.endswith("s")
+        )
+        matched_variant = next((variant for variant in variants if _contains_phrase(text, variant)), None)
+        if matched_variant:
+            candidates.append((section.name, matched_variant, (section,)))
+
+    for top_level in index.top_level_categories:
+        normalized = _phrase_normalize(top_level)
+        if _contains_phrase(text, normalized):
+            if any(
+                _contains_phrase(_phrase_normalize(alias), normalized)
+                for alias in matched_aliases
+            ):
+                continue
+            candidates.append((top_level, normalized, index.sections_for_top_level(top_level)))
+
+    labels: list[str] = []
+    seen_paths: set[tuple[str, ...]] = set()
+    for label, _matched_text, sections in sorted(candidates, key=lambda item: len(item[1]), reverse=True):
+        new_sections = [section for section in sections if section.path not in seen_paths]
+        if not new_sections:
+            continue
+        labels.append(label)
+        seen_paths.update(section.path for section in new_sections)
+
+    return tuple(labels)
+
+
+def _query_has_item_match_modifier(query: str, labels: tuple[str, ...]) -> bool:
+    query_terms = set(_query_match_terms(query))
+    if not query_terms:
+        return False
+
+    scope_terms: set[str] = set()
+    for label in labels:
+        scope_terms.update(_terms_for_text(label))
+
+    return bool(query_terms - scope_terms)
+
+
+def _query_is_pure_menu_overview(query: str) -> bool:
+    text = _phrase_normalize(query)
+    if not any(
+        _contains_phrase(text, phrase)
+        for phrase in (
+            "menu",
+            "categories",
+            "category",
+            "sections",
+            "section",
+            "what do you have",
+        )
+    ):
+        return False
+    return set(_query_match_terms(query)) <= _MENU_OVERVIEW_TERMS
+
+
+def _match_search_text(item: MenuItemMatch) -> str:
+    return _phrase_normalize(
+        " ".join(
+            part or ""
+            for part in (
+                item.name,
+                item.section,
+                item.top_level,
+                item.serving,
+                item.dietary_tags,
+                " ".join(item.tags),
+                item.description,
+            )
+        )
+    )
+
+
+def search_menu_item_matches(
+    query: str,
+    *,
+    max_results: int = 5,
+    menu_doc_path: str | None = None,
+) -> tuple[MenuItemMatch, ...]:
+    raw_terms = _query_match_terms(query)
+    terms = _expanded_query_match_terms(query, menu_doc_path=menu_doc_path)
+    if not terms:
+        return tuple()
+
+    scope_labels = () if terms != raw_terms else _requested_sections_from_query(query)
+    scoped_sections = _section_matches_for_labels(scope_labels)
+    scoped_section_names = {_normalize(section.name) for section in scoped_sections}
+    scope_terms: set[str] = set()
+    for label in scope_labels:
+        scope_terms.update(_terms_for_text(label))
+    descriptor_terms = tuple(term for term in terms if term not in scope_terms)
+    required_terms = descriptor_terms or (() if scoped_sections else terms)
+
+    matches: list[MenuItemMatch] = []
+    for item in build_menu_item_match_index(menu_doc_path):
+        if scoped_sections and _normalize(item.section) not in scoped_section_names:
+            continue
+
+        search_text = _match_search_text(item)
+        matched_terms = tuple(term for term in terms if _contains_phrase(search_text, term))
+        if not matched_terms:
+            continue
+        if required_terms and not all(term in matched_terms for term in required_terms):
+            continue
+
+        name_text = _phrase_normalize(item.name)
+        tag_text = _phrase_normalize(" ".join(item.tags))
+        score = len(matched_terms)
+        score += sum(3 for term in matched_terms if _contains_phrase(tag_text, term))
+        score += sum(2 for term in matched_terms if _contains_phrase(name_text, term))
+        matches.append(
+            MenuItemMatch(
+                name=item.name,
+                section=item.section,
+                top_level=item.top_level,
+                price=item.price,
+                serving=item.serving,
+                dietary_tags=item.dietary_tags,
+                tags=item.tags,
+                description=item.description,
+                matched_terms=matched_terms,
+                score=score,
+            )
+        )
+
+    return tuple(
+        sorted(matches, key=lambda item: (-item.score, item.name))[:max_results]
+    )
+
+
+def _copy_menu_item(
+    item: MenuItemMatch,
+    *,
+    matched_terms: tuple[str, ...] = (),
+    score: int = 0,
+) -> MenuItemMatch:
+    return MenuItemMatch(
+        name=item.name,
+        section=item.section,
+        top_level=item.top_level,
+        price=item.price,
+        serving=item.serving,
+        dietary_tags=item.dietary_tags,
+        tags=item.tags,
+        description=item.description,
+        matched_terms=matched_terms,
+        score=score,
+    )
+
+
+def recommend_menu_items(
+    *,
+    max_results: int = 5,
+    menu_doc_path: str | None = None,
+) -> tuple[MenuItemMatch, ...]:
+    """Return a stable, data-derived diverse sample from the menu.
+
+    The selector uses only the parsed menu document: top-level order, section
+    order, and item order. It alternates across top-level groups, then walks
+    each group's sections in document order. No item or category names are
+    encoded in code.
+    """
+    item_by_name = _menu_item_by_name(menu_doc_path)
+    index = build_menu_index(menu_doc_path)
+    section_positions = {top_level: 0 for top_level in index.top_level_categories}
+    sections_by_top_level = {
+        top_level: index.sections_for_top_level(top_level)
+        for top_level in index.top_level_categories
+    }
+    picks: list[MenuItemMatch] = []
+    seen_items: set[str] = set()
+
+    while len(picks) < max_results:
+        added_in_round = False
+        for top_level in index.top_level_categories:
+            sections = sections_by_top_level[top_level]
+            position = section_positions[top_level]
+            while position < len(sections):
+                section = sections[position]
+                section_positions[top_level] = position + 1
+                position += 1
+                item = next(
+                    (
+                        item_by_name[item_name]
+                        for item_name in section.items
+                        if item_name in item_by_name and item_name not in seen_items
+                    ),
+                    None,
+                )
+                if item is None:
+                    continue
+                picks.append(_copy_menu_item(item, matched_terms=("menu_data",)))
+                seen_items.add(item.name)
+                added_in_round = True
+                break
+            if len(picks) >= max_results:
+                break
+        if not added_in_round:
+            break
+
+    return tuple(picks)
+
+
+def _format_item_lines(items: tuple[MenuItemMatch, ...]) -> list[str]:
+    lines: list[str] = []
+    for item in items:
+        details = []
+        if item.price:
+            details.append(f"INR {item.price}")
+        details.append(item.section)
+        if item.serving:
+            details.append(item.serving)
+        suffix = f" ({'; '.join(details)})" if details else ""
+        lines.append(f"- {item.name}{suffix}")
+        if item.description:
+            lines.append(f"  {item.description}")
+    return lines
+
+
+def format_menu_recommendations(
+    *,
+    max_results: int = 5,
+    menu_doc_path: str | None = None,
+) -> str:
+    items = recommend_menu_items(max_results=max_results, menu_doc_path=menu_doc_path)
+    if not items:
+        return "No menu recommendations are available from the current menu data."
+
+    lines = ["Representative picks from the current menu:"]
+    lines.extend(_format_item_lines(items))
+    return "\n".join(lines)
+
+
+def format_menu_item_matches(
+    query: str,
+    *,
+    max_results: int = 5,
+    menu_doc_path: str | None = None,
+) -> str:
+    matches = search_menu_item_matches(
+        query,
+        max_results=max_results,
+        menu_doc_path=menu_doc_path,
+    )
+    raw_terms = _query_match_terms(query)
+    expanded_terms = _expanded_query_match_terms(query, menu_doc_path=menu_doc_path)
+    requested_sections = (
+        ()
+        if expanded_terms != raw_terms
+        else _requested_sections_from_query(query)
+    )
+    requested_section_text = ", ".join(requested_sections)
+    if not matches:
+        return "No matching menu items are available for that request."
+
+    text = _phrase_normalize(query)
+    if requested_section_text:
+        heading = f"Here are the matching menu items for {requested_section_text}:"
+    elif _contains_phrase(text, "dessert") or _contains_phrase(text, "desserts"):
+        heading = (
+            "I did not find a dedicated Desserts section, but I found these "
+            "dessert-style menu items:"
+        )
+    else:
+        heading = "Here are the matching menu items I found:"
+
+    lines = [heading]
+    lines.extend(_format_item_lines(matches))
+    return "\n".join(lines)
 
 
 def get_menu_categories(*, include_items: bool = True) -> dict[str, object]:
@@ -339,46 +901,8 @@ def resolve_sections(section_name: str) -> tuple[MenuSection, ...]:
 
 
 def _requested_section_from_query(query: str) -> str | None:
-    index = build_menu_index()
-    text = _phrase_normalize(query)
-
-    for alias in sorted(index.aliases, key=len, reverse=True):
-        normalized_alias = _phrase_normalize(alias)
-        if " " in normalized_alias and _contains_phrase(text, normalized_alias):
-            return alias
-
-    for section in sorted(index.sections, key=lambda item: len(item.name), reverse=True):
-        variants = {
-            _phrase_normalize(section.name),
-            _phrase_normalize(section.path[-1]),
-            _phrase_normalize(" ".join(section.path[1:])),
-        }
-        variants.update(
-            variant.removesuffix("s")
-            for variant in list(variants)
-            if variant.endswith("s")
-        )
-        if any(_contains_phrase(text, variant) for variant in variants):
-            return section.name
-
-    for alias in sorted(index.aliases, key=len, reverse=True):
-        if _contains_phrase(text, _phrase_normalize(alias)):
-            if len(resolve_sections(alias)) > 1 and any(
-                _contains_phrase(text, word)
-                for word in ("categories", "category", "sections", "section")
-            ):
-                continue
-            return alias
-
-    for top_level in index.top_level_categories:
-        if _contains_phrase(text, _phrase_normalize(top_level)):
-            if not any(
-                _contains_phrase(text, word)
-                for word in ("categories", "category", "sections", "section")
-            ):
-                return top_level
-
-    return None
+    sections = _requested_sections_from_query(query)
+    return sections[0] if sections else None
 
 
 def _query_wants_complete_items(query: str) -> bool:
@@ -391,18 +915,7 @@ def _query_wants_complete_items(query: str) -> bool:
 
 
 def _query_requests_menu_overview(query: str) -> bool:
-    text = _phrase_normalize(query)
-    return any(
-        _contains_phrase(text, phrase)
-        for phrase in (
-            "menu",
-            "categories",
-            "category",
-            "sections",
-            "section",
-            "what do you have",
-        )
-    )
+    return _query_is_pure_menu_overview(query)
 
 
 def format_menu_categories(*, include_items: bool = False) -> str:
@@ -412,8 +925,6 @@ def format_menu_categories(*, include_items: bool = False) -> str:
     else:
         lines = [
             "Of course. Here are the menu sections:",
-            "",
-            "Pick any section you like, and I can show you the items inside it.",
         ]
 
     for top_level in data["top_level_categories"]:
@@ -443,14 +954,28 @@ def format_menu_section_items(section_name: str) -> str:
         section = matches[0]
         lines = [f"Absolutely. Here are the items under {section.name}:"]
         lines.extend(f"- {item}" for item in section.items)
-        lines.extend(["", "I can show prices or details for any one you like."])
         return "\n".join(lines)
 
     lines = [f"Absolutely. Here are the matching sections for {section_name}:"]
     for section in matches:
         lines.extend(["", f"{section.name}:"])
         lines.extend(f"- {item}" for item in section.items)
-    lines.extend(["", "I can show prices or details for any one you like."])
+    return "\n".join(lines)
+
+
+def format_menu_multi_section_items(section_names: tuple[str, ...], query: str) -> str:
+    matches = _section_matches_for_labels(section_names)
+    if not matches:
+        sections = ", ".join(build_menu_index().flat_category_names)
+        return (
+            f"I could not find menu sections matching '{query}'. "
+            f"Available sections are: {sections}."
+        )
+
+    lines = [f"Absolutely. Here are the matching sections for {query}:"]
+    for section in matches:
+        lines.extend(["", f"{section.name}:"])
+        lines.extend(f"- {item}" for item in section.items)
     return "\n".join(lines)
 
 
@@ -461,20 +986,23 @@ def format_menu_browse_query(query: str, *, include_items: bool | None = None) -
 
 def browse_menu_query(query: str, *, include_items: bool | None = None) -> MenuBrowseResult:
     """Return menu browsing text plus whether it is safe to pass through."""
-    requested_section = _requested_section_from_query(query)
-    if requested_section:
+    requested_sections = _requested_sections_from_query(query)
+    requested_section = ", ".join(requested_sections) if requested_sections else None
+    if requested_sections:
+        display_text = (
+            format_menu_section_items(requested_sections[0])
+            if len(requested_sections) == 1
+            else format_menu_multi_section_items(requested_sections, query)
+        )
         return MenuBrowseResult(
-            display_text=format_menu_section_items(requested_section),
+            display_text=display_text,
             response_kind="section_items",
-            passthrough=True,
+            passthrough=not _query_has_item_match_modifier(query, requested_sections),
             requested_section=requested_section,
         )
 
-    should_include_items = (
-        _query_wants_complete_items(query)
-        if include_items is None
-        else include_items
-    )
+    wants_complete_items = _query_wants_complete_items(query)
+    should_include_items = wants_complete_items if include_items is None else include_items and wants_complete_items
     is_menu_overview = _query_requests_menu_overview(query)
     return MenuBrowseResult(
         display_text=format_menu_categories(include_items=should_include_items),
@@ -498,25 +1026,18 @@ def extract_price_limit(query: str) -> int | None:
 
 
 def _price_scope_from_query(query: str) -> str | None:
-    text = _phrase_normalize(query)
     requested_section = _requested_section_from_query(query)
     if requested_section:
-        normalized_section = _phrase_normalize(requested_section)
-        if normalized_section in {"drink", "drinks", "beverage", "beverages"}:
-            return "Beverages"
-        if normalized_section == "food":
-            return "Food"
-
         matches = resolve_sections(requested_section)
         if not matches:
             return requested_section
-        if len({section.top_level for section in matches}) == 1:
+        top_levels = {section.top_level for section in matches}
+        if len(top_levels) == 1:
+            top_level = next(iter(top_levels))
+            if _normalize(requested_section) == _normalize(top_level):
+                return top_level
             return requested_section
 
-    if any(_contains_phrase(text, word) for word in ("drink", "drinks", "beverage", "beverages")):
-        return "Beverages"
-    if _contains_phrase(text, "food"):
-        return "Food"
     return None
 
 
@@ -540,27 +1061,26 @@ def is_price_list_request(query: str) -> bool:
     ) and extract_price_limit(query) is None
 
 
+def _query_mentions_menu_scope(query: str) -> bool:
+    text = _phrase_normalize(query)
+    index = build_menu_index()
+    candidates: set[str] = set(index.top_level_categories)
+    candidates.update(index.flat_category_names)
+    candidates.update(index.aliases)
+    candidates.update(item.name for item in build_menu_item_match_index())
+
+    for candidate in candidates:
+        normalized = _phrase_normalize(candidate)
+        variants = {normalized, normalized.removesuffix("s")}
+        if any(_contains_phrase(text, variant) for variant in variants):
+            return True
+    return False
+
+
 def is_context_dependent_price_request(query: str) -> bool:
     if not is_price_list_request(query):
         return False
-    text = _phrase_normalize(query)
-    return not any(
-        _contains_phrase(text, phrase)
-        for phrase in (
-            "coffee",
-            "coffees",
-            "coffee options",
-            "pizza",
-            "pizzas",
-            "mocktail",
-            "mocktails",
-            "drink",
-            "drinks",
-            "beverage",
-            "beverages",
-            "food",
-        )
-    )
+    return not _query_mentions_menu_scope(query)
 
 
 def filter_price_items(
@@ -651,7 +1171,6 @@ def format_price_list_query(query: str) -> str:
         detail = item.serving or item.dietary
         suffix = f" ({detail})" if detail else ""
         lines.append(f"- {item.name} - ₹{item.price} [{item.category}]{suffix}")
-    lines.extend(["", "Tell me any item name if you want the full details."])
     return "\n".join(lines)
 
 
@@ -675,7 +1194,7 @@ def format_price_filter_query(query: str, *, max_price: int | None = None) -> st
             )
         return (
             f"I could not find any{scope_text} items under ₹{limit}. "
-            "I can show the lowest-priced menu options if you like."
+            "No matching menu items are available for that request."
         )
 
     if len(matches) == 1:
@@ -695,5 +1214,4 @@ def format_price_filter_query(query: str, *, max_price: int | None = None) -> st
         detail = item.serving or item.dietary
         suffix = f" ({detail})" if detail else ""
         lines.append(f"- {item.name} - ₹{item.price} [{item.category}]{suffix}")
-    lines.extend(["", "Want me to narrow these by drinks, food, or a category?"])
     return "\n".join(lines)

@@ -2,13 +2,17 @@ import json
 from types import SimpleNamespace
 
 import pytest
+from agentscope.message import TextBlock
+from agentscope.tool import ToolResponse
 
+from cafe.agents.specialists.product_search_agent import _menu_answer_postprocess
 from cafe.tools.cart_tools import add_to_cart, view_cart
 from cafe.tools.order_tools import cancel_order, place_order
 from cafe.tools import product_tools
 from cafe.tools.product_tools import (
     browse_menu,
     browse_current_menu_request,
+    find_current_menu_matches,
     filter_current_menu_by_price,
     format_menu_categories,
     format_menu_section_items,
@@ -16,6 +20,7 @@ from cafe.tools.product_tools import (
     list_current_menu_prices,
     list_menu_categories,
     list_menu_section_items,
+    recommend_current_menu_items,
     reset_current_product_session_id,
     reset_current_product_query,
     search_product_and_attribute_knowledge,
@@ -28,6 +33,54 @@ from cafe.tools.support_tools import faq_lookup
 
 def payload(resp):
     return json.loads(resp.content[0]["text"])
+
+
+def test_product_agent_menu_tool_postprocess_renders_final_answer_data():
+    tool_response = ToolResponse(content=[
+        TextBlock(
+            type="text",
+            text=json.dumps({
+                "success": True,
+                "data": {
+                    "display_text": "Of course. Here are the menu sections:\n- Coffees",
+                    "response_kind": "menu_sections",
+                },
+                "error": None,
+            }),
+        )
+    ])
+
+    processed = _menu_answer_postprocess({}, tool_response)
+
+    assert processed is not None
+    text = processed.content[0]["text"]
+    assert "FINAL_ANSWER_DATA:" in text
+    assert "Of course. Here are the menu sections:" in text
+    assert "Write a natural menu overview in prose" in text
+    assert "Do not use a bullet list for this broad menu overview" in text
+
+
+def test_product_agent_section_tool_postprocess_keeps_list_style():
+    tool_response = ToolResponse(content=[
+        TextBlock(
+            type="text",
+            text=json.dumps({
+                "success": True,
+                "data": {
+                    "display_text": "Here are the items under Pizzas:\n- Margherita Pizza",
+                    "response_kind": "section_items",
+                },
+                "error": None,
+            }),
+        )
+    ])
+
+    processed = _menu_answer_postprocess({}, tool_response)
+
+    assert processed is not None
+    text = processed.content[0]["text"]
+    assert "Use a direct heading plus list" in text
+    assert "Do not start with 'I found'" in text
 
 
 @pytest.mark.asyncio
@@ -175,8 +228,85 @@ async def test_browse_current_menu_request_marks_unknown_browse_as_non_passthrou
 
     assert data["success"] is True
     assert data["data"]["passthrough"] is False
-    assert data["data"]["response_kind"] == "menu_items"
-    assert "Here is the complete menu, grouped by section:" in data["data"]["display_text"]
+    assert data["data"]["response_kind"] == "menu_sections"
+    assert "Of course. Here are the menu sections:" in data["data"]["display_text"]
+
+
+@pytest.mark.asyncio
+async def test_browse_current_menu_request_does_not_let_model_force_full_menu(store):
+    token = set_current_product_query("show the menu")
+    try:
+        data = payload(await browse_current_menu_request(include_items=True))
+    finally:
+        reset_current_product_query(token)
+
+    assert data["success"] is True
+    assert data["data"]["passthrough"] is True
+    assert data["data"]["response_kind"] == "menu_sections"
+    assert "Of course. Here are the menu sections:" in data["data"]["display_text"]
+    assert "Here is the complete menu, grouped by section:" not in data["data"]["display_text"]
+    assert "- Coffees:" not in data["data"]["display_text"]
+
+
+@pytest.mark.asyncio
+async def test_find_current_menu_matches_returns_dessert_style_items(store):
+    token = set_current_product_query("any desserts")
+    try:
+        data = payload(await find_current_menu_matches(max_results=4))
+    finally:
+        reset_current_product_query(token)
+
+    assert data["success"] is True
+    assert data["data"]["passthrough"] is True
+    assert data["data"]["response_kind"] == "item_matches"
+    assert data["data"]["count"] >= 3
+    display_text = data["data"]["display_text"]
+    assert "dedicated Desserts section" in display_text
+    assert "Affogato" in display_text
+    assert "Brownie Cold Coffee" in display_text
+    assert "Brownie Shake" in display_text
+    assert "menu sections" not in display_text
+
+
+@pytest.mark.asyncio
+async def test_find_current_menu_matches_no_match_is_not_passthrough(store):
+    token = set_current_product_query("show unicorn snacks")
+    try:
+        data = payload(await find_current_menu_matches(max_results=4))
+    finally:
+        reset_current_product_query(token)
+
+    assert data["success"] is True
+    assert data["data"]["count"] == 0
+    assert data["data"]["passthrough"] is False
+    assert data["data"]["items"] == []
+
+
+@pytest.mark.asyncio
+async def test_recommend_current_menu_items_returns_structured_data_driven_list(store):
+    data = payload(await recommend_current_menu_items(max_results=5))
+
+    assert data["success"] is True
+    assert data["data"]["passthrough"] is True
+    assert data["data"]["response_kind"] == "recommendations"
+    assert 1 <= data["data"]["count"] <= 5
+    assert data["data"]["items"]
+    assert "Representative picks from the current menu:" in data["data"]["display_text"]
+    assert "I can show" not in data["data"]["display_text"]
+    assert "Would you like" not in data["data"]["display_text"]
+
+
+@pytest.mark.asyncio
+async def test_browse_current_menu_request_marks_preference_scoped_browse_non_passthrough(store):
+    token = set_current_product_query("sweet cold drinks")
+    try:
+        data = payload(await browse_current_menu_request())
+    finally:
+        reset_current_product_query(token)
+
+    assert data["success"] is True
+    assert data["data"]["passthrough"] is False
+    assert data["data"]["requested_section"] == "cold drinks"
 
 
 @pytest.mark.asyncio

@@ -84,7 +84,7 @@ def test_detects_context_dependent_followup():
 
 
 @pytest.mark.asyncio
-async def test_specialist_display_text_tool_result_passthrough():
+async def test_specialist_returns_agent_reply_even_with_display_text_tool_result():
     display_text = "Here is the complete menu category list:\n\nBeverages:\n- Mocktails"
     agent_reply = "I found the menu sections. Which one would you like to explore?"
     tool_payload = json.dumps({"success": True, "data": {"display_text": display_text}, "error": None})
@@ -106,7 +106,7 @@ async def test_specialist_display_text_tool_result_passthrough():
 
     response = await _ask(CategoryAgent(), "Show the menu")
 
-    assert response.content[0]["text"] == display_text
+    assert response.content[0]["text"] == agent_reply
 
 
 @pytest.mark.asyncio
@@ -126,7 +126,7 @@ async def test_specialist_uses_agent_reply_without_display_text():
 
 
 @pytest.mark.asyncio
-async def test_specialist_section_item_display_text_passthrough():
+async def test_specialist_section_item_uses_agent_reply():
     display_text = "Here are the items under Coffees:\n- Espresso\n- Affogato"
     tool_payload = json.dumps({"success": True, "data": {"display_text": display_text}, "error": None})
 
@@ -147,7 +147,7 @@ async def test_specialist_section_item_display_text_passthrough():
 
     response = await _ask(SectionAgent(), "Show coffees")
 
-    assert response.content[0]["text"] == display_text
+    assert response.content[0]["text"] == "I found coffee sections."
 
 
 @pytest.mark.asyncio
@@ -183,7 +183,7 @@ async def test_specialist_uses_agent_reply_when_later_non_display_tool_runs():
 
 
 @pytest.mark.asyncio
-async def test_specialist_display_text_ignores_later_plain_text_helper_tool():
+async def test_specialist_returns_agent_reply_even_when_tool_display_text_exists():
     display_text = "Here is the complete menu, grouped by section:\n\nBeverages:\n- Coffees: Espresso"
     browse_payload = json.dumps({
         "success": True,
@@ -218,7 +218,7 @@ async def test_specialist_display_text_ignores_later_plain_text_helper_tool():
 
     response = await _ask(SkillHelperAgent(), "show the menu please")
 
-    assert response.content[0]["text"] == display_text
+    assert response.content[0]["text"] == "I found the menu. Want categories?"
 
 
 @pytest.mark.asyncio
@@ -253,3 +253,123 @@ async def test_specialist_uses_agent_reply_when_display_text_is_non_passthrough(
     response = await _ask(FallbackBrowseAgent(), "any desserts?")
 
     assert response.content[0]["text"] == agent_reply
+
+
+@pytest.mark.asyncio
+async def test_specialist_returns_agent_reply_after_structured_match_tool():
+    browse_payload = json.dumps({
+        "success": True,
+        "data": {
+            "display_text": "Here is the complete menu, grouped by section:\n\nBeverages:\n- Coffees",
+            "response_kind": "menu_items",
+            "passthrough": False,
+        },
+        "error": None,
+    })
+    match_text = (
+        "I did not find a dedicated Desserts section, but I found these "
+        "dessert-style menu items:\n- Affogato"
+    )
+    match_payload = json.dumps({
+        "success": True,
+        "data": {
+            "display_text": match_text,
+            "response_kind": "item_matches",
+            "passthrough": True,
+        },
+        "error": None,
+    })
+
+    class ConceptMatchAgent:
+        def __init__(self):
+            self.memory = SimpleNamespace(get_memory=lambda: [
+                SimpleNamespace(content=[
+                    {
+                        "type": "tool_result",
+                        "name": "browse_current_menu_request",
+                        "output": [{"type": "text", "text": browse_payload}],
+                    },
+                    {
+                        "type": "tool_result",
+                        "name": "find_current_menu_matches",
+                        "output": [{"type": "text", "text": match_payload}],
+                    },
+                ])
+            ])
+
+        async def __call__(self, msg):
+            return SimpleNamespace(content="I found dessert options.")
+
+    response = await _ask(ConceptMatchAgent(), "any desserts?")
+
+    assert response.content[0]["text"] == "I found dessert options."
+
+
+@pytest.mark.asyncio
+async def test_specialist_does_not_passthrough_empty_structured_match_result():
+    match_payload = json.dumps({
+        "success": True,
+        "data": {
+            "display_text": "I could not find menu items matching that request.",
+            "items": [],
+            "count": 0,
+            "response_kind": "item_matches",
+            "passthrough": False,
+        },
+        "error": None,
+    })
+    agent_reply = "I could not find unicorn snacks on the current menu."
+
+    class EmptyMatchAgent:
+        def __init__(self):
+            self.memory = SimpleNamespace(get_memory=lambda: [
+                SimpleNamespace(content=[
+                    {
+                        "type": "tool_result",
+                        "name": "find_current_menu_matches",
+                        "output": [{"type": "text", "text": match_payload}],
+                    },
+                ])
+            ])
+
+        async def __call__(self, msg):
+            return SimpleNamespace(content=agent_reply)
+
+    response = await _ask(EmptyMatchAgent(), "show unicorn snacks")
+
+    assert response.content[0]["text"] == agent_reply
+
+
+@pytest.mark.asyncio
+async def test_specialist_returns_agent_reply_after_recommendation_tool():
+    display_text = "Representative picks from the current menu:\n- Espresso (INR 99; Coffees; Hot only)"
+    tool_payload = json.dumps({
+        "success": True,
+        "data": {
+            "display_text": display_text,
+            "items": [{"name": "Espresso"}],
+            "count": 1,
+            "response_kind": "recommendations",
+            "passthrough": True,
+        },
+        "error": None,
+    })
+
+    class RecommendationAgent:
+        def __init__(self):
+            self.memory = SimpleNamespace(get_memory=lambda: [
+                SimpleNamespace(content=[
+                    {
+                        "type": "tool_result",
+                        "name": "recommend_current_menu_items",
+                        "output": [{"type": "text", "text": tool_payload}],
+                    },
+                ])
+            ])
+
+        async def __call__(self, msg):
+            return SimpleNamespace(content="I recommend Espresso.")
+
+    response = await _ask(RecommendationAgent(), "what do you recommend?")
+
+    assert response.content[0]["text"] == "I recommend Espresso."
