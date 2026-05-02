@@ -4,7 +4,9 @@ The Orchestrator's toolkit is built from these. Specialists are short-lived
 because cart/order state lives in StateStore, not in specialist chat memory.
 """
 
+import json
 from contextvars import ContextVar
+from inspect import isawaitable
 
 from agentscope.message import Msg, TextBlock
 from agentscope.tool import ToolResponse
@@ -110,10 +112,74 @@ def _extract_reply_text(reply) -> str:
     return _extract_text_blocks(content)
 
 
+def _extract_final_answer_data(text: str) -> str | None:
+    marker = "FINAL_ANSWER_DATA:"
+    if marker not in text:
+        return None
+
+    answer = text.split(marker, 1)[1].strip()
+    if "\n\nUse the FINAL_ANSWER_DATA" in answer:
+        answer = answer.split("\n\nUse the FINAL_ANSWER_DATA", 1)[0].strip()
+    return answer or None
+
+
+def _display_text_from_payload(text: str) -> str | None:
+    direct = _extract_final_answer_data(text)
+    if direct:
+        return direct
+
+    try:
+        payload = json.loads(text)
+    except json.JSONDecodeError:
+        return None
+
+    data = payload.get("data") or {}
+    display_text = data.get("display_text")
+    if not display_text:
+        return None
+
+    if data.get("passthrough") is False or data.get("count") == 0:
+        return None
+    return str(display_text).strip() or None
+
+
+async def _agent_memory_messages(agent) -> list:
+    memory = getattr(agent, "memory", None)
+    if memory is None:
+        return []
+
+    try:
+        try:
+            msgs = memory.get_memory(prepend_summary=False)
+        except TypeError:
+            msgs = memory.get_memory()
+        if isawaitable(msgs):
+            msgs = await msgs
+    except Exception:
+        return []
+    return list(msgs or [])
+
+
+async def _customer_ready_tool_text(agent) -> str | None:
+    """Prefer complete menu/tool display text over lossy agent summaries."""
+    candidate = None
+    for msg in await _agent_memory_messages(agent):
+        for block in getattr(msg, "content", []) or []:
+            if not isinstance(block, dict) or block.get("type") != "tool_result":
+                continue
+
+            text = _extract_text_blocks(block.get("output"))
+            if display_text := _display_text_from_payload(text):
+                candidate = display_text
+            elif block.get("name") != "view_text_file":
+                candidate = None
+    return candidate
+
+
 async def _ask(agent, query: str) -> ToolResponse:
     """Send a query to a specialist and wrap the specialist's final reply."""
     reply = await agent(Msg(name="orchestrator", content=query, role="user"))
-    text = _extract_reply_text(reply)
+    text = await _customer_ready_tool_text(agent) or _extract_reply_text(reply)
 
     if text.strip():
         return ToolResponse(content=[TextBlock(type="text", text=text)])
@@ -129,7 +195,10 @@ async def ask_product_agent(query: str) -> ToolResponse:
             session_id if relevant (e.g. "[session_id=s1] Find coffee under ₹150").
 
     Returns:
-        The specialist's textual reply.
+        A customer-ready menu/product answer. If it contains a list, category
+        overview, price list, or item list, copy it exactly in the final
+        customer response; do not rewrite it into prose or add a closing
+        question.
 
     Example:
         ask_product_agent(query="What hot drinks under ₹100 do you have?")
@@ -151,7 +220,7 @@ async def ask_cart_agent(query: str) -> ToolResponse:
             "[session_id=s1] Add 2 of m001".
 
     Returns:
-        The specialist's textual reply.
+        A customer-ready cart answer. Copy complete cart summaries exactly.
 
     Example:
         ask_cart_agent(query="[session_id=s1] Show my cart")
@@ -166,7 +235,8 @@ async def ask_order_agent(query: str) -> ToolResponse:
         query: Instruction. Include session_id and any budget.
 
     Returns:
-        The specialist's textual reply.
+        A customer-ready order answer. Copy complete order status or checkout
+        summaries exactly.
 
     Example:
         ask_order_agent(query="[session_id=s1] Place the order, budget ₹300")
@@ -181,7 +251,8 @@ async def ask_support_agent(query: str) -> ToolResponse:
         query: User's question (hours, wifi, vegan, allergens, payment, etc.)
 
     Returns:
-        The specialist's textual reply.
+        A customer-ready support answer. Copy exact policy answers without
+        adding unsupported wording.
 
     Example:
         ask_support_agent(query="What are your hours?")

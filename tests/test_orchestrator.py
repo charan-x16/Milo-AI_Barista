@@ -4,6 +4,7 @@ from types import SimpleNamespace
 import pytest
 
 from cafe.agents import specialist_tools
+from cafe.agents.memory import compress_memory_after_turn
 from cafe.agents.specialist_tools import (
     _ask,
     _current_product_tool_query,
@@ -84,7 +85,60 @@ def test_detects_context_dependent_followup():
 
 
 @pytest.mark.asyncio
-async def test_specialist_returns_agent_reply_even_with_display_text_tool_result():
+async def test_post_turn_memory_compression_runs_when_recent_window_overflows():
+    class CountedMemory:
+        keep_recent = 8
+
+        async def get_uncompressed_messages(self):
+            return list(range(9))
+
+    class Agent:
+        def __init__(self):
+            self.memory = CountedMemory()
+            self.compression_config = SimpleNamespace(
+                enable=True,
+                trigger_threshold=60000,
+                keep_recent=99,
+            )
+            self.compressed_with = None
+
+        async def _compress_memory_if_needed(self):
+            self.compressed_with = (
+                self.compression_config.trigger_threshold,
+                self.compression_config.keep_recent,
+            )
+
+    agent = Agent()
+
+    assert await compress_memory_after_turn(agent) is True
+    assert agent.compressed_with == (0, 8)
+    assert agent.compression_config.trigger_threshold == 60000
+    assert agent.compression_config.keep_recent == 99
+
+
+@pytest.mark.asyncio
+async def test_post_turn_memory_compression_skips_inside_recent_window():
+    class CountedMemory:
+        keep_recent = 8
+
+        async def get_uncompressed_messages(self):
+            return list(range(8))
+
+    agent = SimpleNamespace(
+        memory=CountedMemory(),
+        compression_config=SimpleNamespace(
+            enable=True,
+            trigger_threshold=60000,
+            keep_recent=8,
+        ),
+        _compress_memory_if_needed=lambda: None,
+    )
+
+    assert await compress_memory_after_turn(agent) is False
+
+
+@pytest.mark.asyncio
+async def test_specialist_returns_display_text_when_tool_result_is_customer_ready():
     display_text = "Here is the complete menu category list:\n\nBeverages:\n- Mocktails"
     agent_reply = "I found the menu sections. Which one would you like to explore?"
     tool_payload = json.dumps({"success": True, "data": {"display_text": display_text}, "error": None})
@@ -106,7 +160,7 @@ async def test_specialist_returns_agent_reply_even_with_display_text_tool_result
 
     response = await _ask(CategoryAgent(), "Show the menu")
 
-    assert response.content[0]["text"] == agent_reply
+    assert response.content[0]["text"] == display_text
 
 
 @pytest.mark.asyncio
@@ -126,7 +180,7 @@ async def test_specialist_uses_agent_reply_without_display_text():
 
 
 @pytest.mark.asyncio
-async def test_specialist_section_item_uses_agent_reply():
+async def test_specialist_section_item_uses_tool_display_text():
     display_text = "Here are the items under Coffees:\n- Espresso\n- Affogato"
     tool_payload = json.dumps({"success": True, "data": {"display_text": display_text}, "error": None})
 
@@ -147,7 +201,7 @@ async def test_specialist_section_item_uses_agent_reply():
 
     response = await _ask(SectionAgent(), "Show coffees")
 
-    assert response.content[0]["text"] == "I found coffee sections."
+    assert response.content[0]["text"] == display_text
 
 
 @pytest.mark.asyncio
@@ -183,7 +237,7 @@ async def test_specialist_uses_agent_reply_when_later_non_display_tool_runs():
 
 
 @pytest.mark.asyncio
-async def test_specialist_returns_agent_reply_even_when_tool_display_text_exists():
+async def test_specialist_keeps_display_text_when_later_helper_tool_runs():
     display_text = "Here is the complete menu, grouped by section:\n\nBeverages:\n- Coffees: Espresso"
     browse_payload = json.dumps({
         "success": True,
@@ -218,7 +272,7 @@ async def test_specialist_returns_agent_reply_even_when_tool_display_text_exists
 
     response = await _ask(SkillHelperAgent(), "show the menu please")
 
-    assert response.content[0]["text"] == "I found the menu. Want categories?"
+    assert response.content[0]["text"] == display_text
 
 
 @pytest.mark.asyncio
@@ -256,7 +310,7 @@ async def test_specialist_uses_agent_reply_when_display_text_is_non_passthrough(
 
 
 @pytest.mark.asyncio
-async def test_specialist_returns_agent_reply_after_structured_match_tool():
+async def test_specialist_returns_structured_match_display_text():
     browse_payload = json.dumps({
         "success": True,
         "data": {
@@ -302,7 +356,7 @@ async def test_specialist_returns_agent_reply_after_structured_match_tool():
 
     response = await _ask(ConceptMatchAgent(), "any desserts?")
 
-    assert response.content[0]["text"] == "I found dessert options."
+    assert response.content[0]["text"] == match_text
 
 
 @pytest.mark.asyncio
@@ -341,7 +395,7 @@ async def test_specialist_does_not_passthrough_empty_structured_match_result():
 
 
 @pytest.mark.asyncio
-async def test_specialist_returns_agent_reply_after_recommendation_tool():
+async def test_specialist_returns_recommendation_display_text():
     display_text = "Representative picks from the current menu:\n- Espresso (INR 99; Coffees; Hot only)"
     tool_payload = json.dumps({
         "success": True,
@@ -372,4 +426,4 @@ async def test_specialist_returns_agent_reply_after_recommendation_tool():
 
     response = await _ask(RecommendationAgent(), "what do you recommend?")
 
-    assert response.content[0]["text"] == "I recommend Espresso."
+    assert response.content[0]["text"] == display_text

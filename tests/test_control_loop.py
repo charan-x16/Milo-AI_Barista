@@ -28,7 +28,7 @@ async def test_agent_exception_is_handled(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_product_menu_turn_uses_orchestrator_and_specialist_passthrough(monkeypatch):
+async def test_product_menu_turn_returns_orchestrator_final_answer(monkeypatch):
     specialist_reply = "Of course. Here are the menu sections:\n\nBeverages:\n- Coffee Fusions"
 
     class ProductMenuAgent:
@@ -117,7 +117,7 @@ def test_context_no_cart_no_orders():
 
 
 @pytest.mark.asyncio
-async def test_product_only_menu_turn_uses_current_specialist_reply(monkeypatch):
+async def test_product_only_menu_turn_uses_orchestrator_final_answer(monkeypatch):
     specialist_reply = "Here are the items under Coffees:\n- Espresso\n- Affogato"
 
     class ProductOnlyAgent:
@@ -170,7 +170,7 @@ async def test_product_only_menu_turn_uses_current_specialist_reply(monkeypatch)
     ],
 )
 @pytest.mark.asyncio
-async def test_single_specialist_turn_returns_specialist_reply(
+async def test_single_specialist_turn_returns_orchestrator_final_answer(
     monkeypatch,
     tool_name,
     specialist_reply,
@@ -207,7 +207,7 @@ async def test_single_specialist_turn_returns_specialist_reply(
 
     out = await run_turn("s1", "specialist-only turn")
 
-    assert out["reply"] == specialist_reply
+    assert out["reply"] == "Summarized by orchestrator."
 
 
 @pytest.mark.asyncio
@@ -260,7 +260,7 @@ async def test_multi_specialist_turn_uses_orchestrator_reply(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_product_passthrough_uses_only_current_turn_tools(monkeypatch):
+async def test_product_tool_extraction_uses_only_current_turn_tools(monkeypatch):
     current_reply = "Here are the items under Pizzas:\n- Margherita Pizza"
 
     class AgentWithPreviousProductCalls:
@@ -330,7 +330,7 @@ async def test_product_passthrough_uses_only_current_turn_tools(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_single_specialist_passthrough_does_not_inspect_response_text(monkeypatch):
+async def test_single_specialist_final_answer_comes_from_orchestrator(monkeypatch):
     specialist_reply = "Here is the complete menu, grouped by section:\n\nBeverages:\n- Coffees: Espresso"
     orchestrator_reply = "I did not find a dedicated desserts section, but I can show sweet drinks."
 
@@ -403,7 +403,56 @@ async def test_product_final_reply_preserves_specialist_wording(monkeypatch):
 
     out = await run_turn("s1", "what do you recommend?")
 
-    assert out["reply"] == "We have many options. Would you like to explore?"
+    assert out["reply"] == "We have many options."
+
+
+@pytest.mark.asyncio
+async def test_product_formatted_list_drops_orchestrator_markdown_and_closer(monkeypatch):
+    specialist_reply = (
+        "Absolutely. Here are the items under Coffees:\n"
+        "- Espresso\n"
+        "- Doppio\n"
+        "- Americano"
+    )
+
+    class RewritingProductAgent:
+        def __init__(self):
+            self.messages = []
+            self.memory = SimpleNamespace(get_memory=lambda: self.messages)
+
+        async def __call__(self, msg):
+            self.messages.append(
+                SimpleNamespace(content=[
+                    {
+                        "type": "tool_use",
+                        "name": "ask_product_agent",
+                        "input": {"query": "coffees"},
+                    },
+                    {
+                        "type": "tool_result",
+                        "name": "ask_product_agent",
+                        "output": [{"type": "text", "text": specialist_reply}],
+                    },
+                ])
+            )
+            return SimpleNamespace(
+                content=(
+                    "**Coffees:**\n- Espresso\n- Doppio\n- Americano\n\n"
+                    "Would you like to know the prices?"
+                )
+            )
+
+    from cafe.agents import session_manager as sm
+
+    monkeypatch.setattr(
+        sm.SessionManager,
+        "get_or_create",
+        lambda self, session_id: RewritingProductAgent(),
+    )
+
+    out = await run_turn("s1", "can you provide the items under coffees")
+
+    assert out["reply"] == specialist_reply
 
 
 @pytest.mark.asyncio
@@ -444,7 +493,7 @@ async def test_product_final_reply_is_not_rewritten(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_single_product_agent_reply_beats_orchestrator_summary(monkeypatch):
+async def test_single_product_agent_reply_does_not_override_orchestrator_summary(monkeypatch):
     product_agent_reply = "I found the menu sections for you. Beverages include Coffees and Mocktails."
 
     class SummarizingProductAgent:
@@ -479,4 +528,4 @@ async def test_single_product_agent_reply_beats_orchestrator_summary(monkeypatch
 
     out = await run_turn("s1", "show me the menu")
 
-    assert out["reply"] == product_agent_reply
+    assert out["reply"] == "Here are our menu sections:"

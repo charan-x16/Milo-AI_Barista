@@ -49,17 +49,17 @@ def _menu_answer_postprocess(_tool_call, tool_response: ToolResponse) -> ToolRes
 
     if response_kind == "menu_sections":
         style_instruction = (
-            "Use the FINAL_ANSWER_DATA in your final customer response. "
-            "Write a natural menu overview in prose, grouped by the returned "
-            "top-level headings. Include every returned section name. Do not "
-            "use a bullet list for this broad menu overview. Do not add a "
-            "generic follow-up question."
+            "Use the FINAL_ANSWER_DATA exactly as the final customer response. "
+            "Keep the heading, blank lines, top-level headings, and bullet "
+            "lists. Do not convert the list into prose or inline text. Do not "
+            "add a generic follow-up question."
         )
     else:
         style_instruction = (
-            "Use the FINAL_ANSWER_DATA in your final customer response. "
-            "Use a direct heading plus list. Do not start with 'I found'. "
-            "Do not add a generic follow-up question after a successful list."
+            "Use the FINAL_ANSWER_DATA exactly as the final customer response. "
+            "Keep the direct heading and list formatting. Do not start with "
+            "'I found'. Do not add a generic follow-up question after a "
+            "successful list."
         )
 
     rendered = (

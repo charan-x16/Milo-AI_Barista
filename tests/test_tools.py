@@ -56,8 +56,8 @@ def test_product_agent_menu_tool_postprocess_renders_final_answer_data():
     text = processed.content[0]["text"]
     assert "FINAL_ANSWER_DATA:" in text
     assert "Of course. Here are the menu sections:" in text
-    assert "Write a natural menu overview in prose" in text
-    assert "Do not use a bullet list for this broad menu overview" in text
+    assert "Do not convert the list into prose or inline text" in text
+    assert "Keep the heading, blank lines, top-level headings, and bullet" in text
 
 
 def test_product_agent_section_tool_postprocess_keeps_list_style():
@@ -79,7 +79,7 @@ def test_product_agent_section_tool_postprocess_keeps_list_style():
 
     assert processed is not None
     text = processed.content[0]["text"]
-    assert "Use a direct heading plus list" in text
+    assert "Keep the direct heading and list formatting" in text
     assert "Do not start with 'I found'" in text
 
 

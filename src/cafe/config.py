@@ -55,6 +55,7 @@ class Settings(BaseSettings):
     qdrant_menu_attributes_collection: str = "btb_menu_attributes"
     qdrant_support_collection: str = "btb_company_policies"
     log_level: str = "INFO"
+    memory_database_url: str = "sqlite+aiosqlite:///./data/memory/milo_memory.sqlite3"
     memory_max_prompt_tokens: int = 90000
     memory_compression_trigger_tokens: int = 60000
     memory_keep_recent_messages: int = 8

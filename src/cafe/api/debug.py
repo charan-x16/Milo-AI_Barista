@@ -77,7 +77,13 @@ def build_flow_state() -> dict:
             {"name": "StateStore", "status": f"{len(carts)} cart(s), {len(orders)} order(s)"},
             {"name": "Orchestrator", "status": "per session"},
             {"name": "Specialists", "status": "short lived"},
-            {"name": "Memory", "status": f"compress at {settings.memory_compression_trigger_tokens} tokens"},
+            {
+                "name": "Memory",
+                "status": (
+                    f"keep {settings.memory_keep_recent_messages} exact; "
+                    f"compress older or at {settings.memory_compression_trigger_tokens} tokens"
+                ),
+            },
         ],
         "runtime": {
             "provider": normalized_provider(settings),

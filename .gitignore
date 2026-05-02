@@ -60,6 +60,9 @@ cover/
 local_settings.py
 db.sqlite3
 db.sqlite3-journal
+tmp/*.sqlite3
+data/memory/*.sqlite3
+data/memory/*.sqlite3-*
 
 # Flask stuff:
 instance/

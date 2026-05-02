@@ -74,8 +74,13 @@ async def new_session():
 
 @app.post("/chat", response_model=ChatResponse)
 async def chat(req: ChatRequest):
-    out = await run_turn(req.session_id, req.message, req.enable_critic)
-    return ChatResponse(session_id=req.session_id, **out)
+    out = await run_turn(
+        req.session_id,
+        req.message,
+        req.enable_critic,
+        user_id=req.user_id,
+    )
+    return ChatResponse(user_id=req.user_id, session_id=req.session_id, **out)
 
 
 @app.get("/sessions/{session_id}/cart")

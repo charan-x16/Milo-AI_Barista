@@ -80,11 +80,13 @@ def test_prompts_avoid_progress_only_and_empty_followup_loops():
     assert "Do not start with \"I found...\"" in product_prompt
     assert "do not end with a follow-up question" in product_prompt
     assert "Show the requested menu data and stop" in product_prompt
-    assert "natural prose summary grouped by top-level headings" in product_prompt
-    assert "Here's the menu at By The Brew cafe:" in product_prompt
+    assert "keep the returned grouped list format" in product_prompt
+    assert "Of course. Here are the menu sections:" in product_prompt
     assert "Do not narrate internal work to the customer" in orchestrator_prompt
-    assert "pass it through" in orchestrator_prompt
+    assert "copy that response exactly" in orchestrator_prompt
     assert "Do not use generic closers" in orchestrator_prompt
+    assert "Do not convert menu sections into inline prose" in orchestrator_prompt
+    assert "Let me know" in orchestrator_prompt
     assert "list_current_menu_prices()" in product_prompt
     assert "Do not call `browse_current_menu_request` for price-list requests" in product_prompt
     assert 'do not call `list_current_menu_prices` for browse requests like "show cold beverages"' in product_prompt
