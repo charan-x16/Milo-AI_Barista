@@ -6,7 +6,9 @@ readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
     "agentscope>=1.0",
+    "alembic>=1.13",
     "aiosqlite>=0.20",
+    "asyncpg>=0.30",
     "fastapi>=0.115",
     "fastembed>=0.5",
     "pydantic-settings>=2",

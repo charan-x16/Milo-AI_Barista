@@ -2,7 +2,7 @@
 
 ## What This Is
 
-Milo Barista is a 5-agent cafe ordering system built with AgentScope, FastAPI, Pydantic v2, and an in-memory store.
+Milo Barista is a 5-agent cafe ordering system built with AgentScope, FastAPI, Pydantic v2, Qdrant, and SQL-backed conversation memory.
 
 It uses one Orchestrator agent as the supervisor, with four specialist ReActAgents exposed to it as tools:
 
@@ -72,10 +72,37 @@ cp .env.example .env
 # Set LLM_PROVIDER, LLM_MODEL, and LLM_API_KEY in .env
 
 uv sync
+uv run alembic upgrade head
 uv run uvicorn cafe.api.main:app --reload
 ```
 
 The API will be available at `http://127.0.0.1:8000`.
+
+## Database Memory
+
+Conversation memory is stored in SQL using:
+
+- `users`
+- `conversations`
+- `conversation_messages`
+- `conversation_summaries`
+- `carts`
+- `cart_items`
+- `orders`
+- `order_items`
+
+Configure the database with `MEMORY_DATABASE_URL` in `.env`. Local SQLite works
+by default; Neon/Postgres should run migrations before serving traffic:
+
+```bash
+uv run alembic upgrade head
+```
+
+To test migrations against a temporary database without using `.env`:
+
+```bash
+uv run alembic -x database_url=sqlite+aiosqlite:///./tmp/alembic-test.sqlite3 upgrade head
+```
 
 ## RAG Indexing
 
@@ -176,7 +203,6 @@ The hook is already wired through `enable_critic`; it currently returns a placeh
 
 ## Not In This Prototype
 
-- Persistence
 - Auth
 - Streaming
 - Payments

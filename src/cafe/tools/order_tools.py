@@ -2,6 +2,7 @@ from agentscope.tool import ToolResponse
 
 from cafe.core.state import get_store
 from cafe.core.validator import ValidationError
+from cafe.agents.memory import clear_cart_snapshot, save_order_snapshot
 from cafe.models.tool_io import ToolResult
 from cafe.services import order_service
 from cafe.tools._wrap import wrap
@@ -22,6 +23,8 @@ async def place_order(session_id: str, max_budget_inr: int | None = None) -> Too
     """
     try:
         order = order_service.place_order(get_store(), session_id, max_budget_inr)
+        await save_order_snapshot(order)
+        await clear_cart_snapshot(session_id)
         return wrap(ToolResult.ok(order=order.model_dump(mode="json")))
     except ValidationError as e:
         return wrap(ToolResult.fail(str(e)))
@@ -43,6 +46,7 @@ async def track_order(order_id: str) -> ToolResponse:
     """
     try:
         order = order_service.get_order(get_store(), order_id)
+        await save_order_snapshot(order)
         return wrap(ToolResult.ok(order=order.model_dump(mode="json")))
     except ValidationError as e:
         return wrap(ToolResult.fail(str(e)))
@@ -64,6 +68,7 @@ async def cancel_order(order_id: str) -> ToolResponse:
     """
     try:
         order = order_service.cancel_order(get_store(), order_id)
+        await save_order_snapshot(order)
         return wrap(ToolResult.ok(order=order.model_dump(mode="json")))
     except ValidationError as e:
         return wrap(ToolResult.fail(str(e)))

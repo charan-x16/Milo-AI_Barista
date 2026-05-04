@@ -4,7 +4,9 @@ from types import SimpleNamespace
 import pytest
 from agentscope.message import TextBlock
 from agentscope.tool import ToolResponse
+from sqlalchemy import func, select
 
+from cafe.agents.memory import storage as memory_storage
 from cafe.agents.specialists.product_search_agent import _menu_answer_postprocess
 from cafe.tools.cart_tools import add_to_cart, view_cart
 from cafe.tools.order_tools import cancel_order, place_order
@@ -485,6 +487,28 @@ async def test_full_happy_path_add_place_order_cart_empty(store):
     assert order_data["data"]["order"]["status"] == "confirmed"
     assert cart_data["success"] is True
     assert cart_data["data"]["cart"]["items"] == []
+
+    memory = memory_storage.load_memory("s001")
+    await memory._create_table()
+    async with memory.engine.connect() as conn:
+        cart_total = await conn.scalar(
+            select(memory_storage.CARTS_TABLE.c.total_inr).where(
+                memory_storage.CARTS_TABLE.c.conversation_id
+                == memory.conversation_id
+            )
+        )
+        order_count = await conn.scalar(
+            select(func.count(memory_storage.ORDERS_TABLE.c.id)).where(
+                memory_storage.ORDERS_TABLE.c.session_id == "s001"
+            )
+        )
+        order_item_count = await conn.scalar(
+            select(func.count(memory_storage.ORDER_ITEMS_TABLE.c.id))
+        )
+
+    assert cart_total == 0
+    assert order_count == 1
+    assert order_item_count == 1
 
 
 @pytest.mark.asyncio

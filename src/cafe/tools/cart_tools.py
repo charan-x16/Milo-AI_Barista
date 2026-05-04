@@ -2,6 +2,7 @@ from agentscope.tool import ToolResponse
 
 from cafe.core.state import get_store
 from cafe.core.validator import ValidationError
+from cafe.agents.memory import clear_cart_snapshot, save_cart_snapshot
 from cafe.models.tool_io import ToolResult
 from cafe.services import cart_service
 from cafe.tools._wrap import wrap
@@ -29,6 +30,7 @@ async def add_to_cart(
     """
     try:
         cart = cart_service.add_item(get_store(), session_id, item_id, quantity, customizations)
+        await save_cart_snapshot(session_id, cart)
         return wrap(ToolResult.ok(cart=cart.model_dump(), item_count=len(cart.items), total_inr=cart.total_inr))
     except ValidationError as e:
         return wrap(ToolResult.fail(str(e)))
@@ -51,6 +53,7 @@ async def remove_from_cart(session_id: str, item_id: str) -> ToolResponse:
     """
     try:
         cart = cart_service.remove_item(get_store(), session_id, item_id)
+        await save_cart_snapshot(session_id, cart)
         return wrap(ToolResult.ok(cart=cart.model_dump(), item_count=len(cart.items), total_inr=cart.total_inr))
     except ValidationError as e:
         return wrap(ToolResult.fail(str(e)))
@@ -72,6 +75,7 @@ async def view_cart(session_id: str) -> ToolResponse:
     """
     try:
         cart = cart_service.view_cart(get_store(), session_id)
+        await save_cart_snapshot(session_id, cart)
         return wrap(ToolResult.ok(cart=cart.model_dump(), item_count=len(cart.items), total_inr=cart.total_inr))
     except ValidationError as e:
         return wrap(ToolResult.fail(str(e)))
@@ -93,6 +97,7 @@ async def clear_cart(session_id: str) -> ToolResponse:
     """
     try:
         cart_service.clear_cart(get_store(), session_id)
+        await clear_cart_snapshot(session_id)
         return wrap(ToolResult.ok(cleared=True))
     except ValidationError as e:
         return wrap(ToolResult.fail(str(e)))

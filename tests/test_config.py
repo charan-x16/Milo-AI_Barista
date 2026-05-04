@@ -1,3 +1,4 @@
+from cafe.agents.memory import _normalize_async_database_url
 from cafe.config import Settings
 
 
@@ -36,3 +37,13 @@ def test_settings_accept_provider_and_base_url(monkeypatch):
 
     assert settings.llm_provider == "openrouter"
     assert settings.llm_base_url == "https://example.test/v1"
+
+
+def test_neon_asyncpg_sslmode_url_is_normalized():
+    url, kwargs = _normalize_async_database_url(
+        "postgresql+asyncpg://user:pass@example.neon.tech/db?sslmode=require"
+    )
+
+    assert "sslmode" not in url
+    assert url.startswith("postgresql+asyncpg://")
+    assert kwargs == {"connect_args": {"ssl": True, "timeout": 15}}
