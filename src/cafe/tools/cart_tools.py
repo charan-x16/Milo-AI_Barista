@@ -2,7 +2,11 @@ from agentscope.tool import ToolResponse
 
 from cafe.core.state import get_store
 from cafe.core.validator import ValidationError
-from cafe.agents.memory import clear_cart_snapshot, save_cart_snapshot
+from cafe.agents.memory import (
+    clear_cart_snapshot,
+    resolve_menu_item_for_cart,
+    save_cart_snapshot,
+)
 from cafe.models.tool_io import ToolResult
 from cafe.services import cart_service
 from cafe.tools._wrap import wrap
@@ -29,7 +33,25 @@ async def add_to_cart(
         add_to_cart(session_id="s1", item_id="m001", quantity=2)
     """
     try:
-        cart = cart_service.add_item(get_store(), session_id, item_id, quantity, customizations)
+        try:
+            cart = cart_service.add_item(
+                get_store(),
+                session_id,
+                item_id,
+                quantity,
+                customizations,
+            )
+        except ValidationError as exc:
+            if not str(exc).startswith("Unknown menu item:"):
+                raise
+            resolved_item = await resolve_menu_item_for_cart(item_id)
+            cart = cart_service.add_resolved_item(
+                get_store(),
+                session_id,
+                resolved_item,
+                quantity,
+                customizations,
+            )
         await save_cart_snapshot(session_id, cart)
         return wrap(ToolResult.ok(cart=cart.model_dump(), item_count=len(cart.items), total_inr=cart.total_inr))
     except ValidationError as e:

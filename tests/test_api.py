@@ -4,6 +4,8 @@ import pytest
 from fastapi.testclient import TestClient
 
 from cafe.api.main import app
+from cafe.core.state import get_store
+from cafe.services.cart_service import add_item
 
 
 @pytest.fixture
@@ -30,6 +32,17 @@ def test_new_session(client):
 
 
 def test_empty_cart(client):
+    assert client.get("/sessions/abc/cart").json()["total_inr"] == 0
+
+
+def test_reset_session_clears_current_cart(client):
+    add_item(get_store(), "abc", "m001", quantity=2)
+
+    assert client.get("/sessions/abc/cart").json()["total_inr"] == 360
+
+    response = client.post("/sessions/abc/reset")
+
+    assert response.status_code == 200
     assert client.get("/sessions/abc/cart").json()["total_inr"] == 0
 
 

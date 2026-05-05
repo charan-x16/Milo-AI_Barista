@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 from copy import deepcopy
 from hashlib import sha256
 from inspect import currentframe
@@ -39,8 +40,11 @@ from sqlalchemy import (
 from sqlalchemy.engine import make_url
 from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
 
+from cafe.core.validator import ValidationError
 from cafe.models.cart import Cart
+from cafe.models.menu import MenuItem
 from cafe.models.order import Order
+from cafe.services.menu_index_service import build_menu_item_match_index
 from cafe.config import Settings, get_settings
 
 
@@ -116,6 +120,26 @@ CONVERSATION_SUMMARIES_TABLE = Table(
     Column("is_active", Boolean, nullable=False, default=True),
     Column("metadata", JSON, nullable=False, default=dict),
     Column("created_at", DateTime(timezone=True), server_default=func.now()),
+)
+
+MENU_ITEMS_TABLE = Table(
+    "menu_items",
+    APP_MEMORY_METADATA,
+    Column("id", String(255), primary_key=True),
+    Column("name", String(255), nullable=False),
+    Column("normalized_name", String(255), nullable=False),
+    Column("top_level", String(255), nullable=False),
+    Column("section", String(255), nullable=False),
+    Column("price_inr", Integer, nullable=False),
+    Column("serving", String(255), nullable=True),
+    Column("dietary_tags", String(255), nullable=True),
+    Column("tags", JSON, nullable=False, default=list),
+    Column("description", Text, nullable=True),
+    Column("available", Boolean, nullable=False, default=True),
+    Column("metadata", JSON, nullable=False, default=dict),
+    Column("created_at", DateTime(timezone=True), server_default=func.now()),
+    Column("updated_at", DateTime(timezone=True), server_default=func.now()),
+    UniqueConstraint("normalized_name", name="uq_menu_items_normalized_name"),
 )
 
 CARTS_TABLE = Table(
@@ -223,6 +247,22 @@ def _storage_session_id(user_id: str, session_id: str) -> str:
 
 def _cart_id(conversation_id: str) -> str:
     return sha256(f"{conversation_id}:cart".encode("utf-8")).hexdigest()
+
+
+def _menu_item_id(name: str) -> str:
+    slug = re.sub(r"[^a-z0-9]+", "-", name.casefold()).strip("-")
+    return f"menu-{slug}"
+
+
+def _normalized_menu_name(name: str) -> str:
+    return " ".join(re.sub(r"[^a-z0-9]+", " ", name.casefold()).split())
+
+
+def _first_price_inr(price_text: str | None) -> int | None:
+    if not price_text:
+        return None
+    match = re.search(r"\d+", price_text)
+    return int(match.group(0)) if match else None
 
 
 def _line_id(parent_id: str, index: int, item_id: str, customizations: list[str]) -> str:
@@ -952,6 +992,76 @@ def load_memory(
     )
 
 
+async def ensure_menu_catalog(settings: Settings | None = None) -> None:
+    """Seed SQL menu_items from the canonical parsed menu document."""
+    settings = settings or get_settings()
+    engine = _get_engine(settings)
+    async with engine.begin() as conn:
+        await conn.run_sync(APP_MEMORY_METADATA.create_all)
+        existing_count = await conn.scalar(select(func.count(MENU_ITEMS_TABLE.c.id)))
+        if existing_count:
+            return
+
+        for item in build_menu_item_match_index():
+            price = _first_price_inr(item.price)
+            if price is None:
+                continue
+            await conn.execute(
+                insert(MENU_ITEMS_TABLE).values(
+                    id=_menu_item_id(item.name),
+                    name=item.name,
+                    normalized_name=_normalized_menu_name(item.name),
+                    top_level=item.top_level,
+                    section=item.section,
+                    price_inr=price,
+                    serving=item.serving,
+                    dietary_tags=item.dietary_tags,
+                    tags=list(item.tags),
+                    description=item.description,
+                    available=True,
+                    metadata={"source": "BTB_Menu_Enhanced.md"},
+                )
+            )
+
+
+async def resolve_menu_item_for_cart(
+    item_ref: str,
+    settings: Settings | None = None,
+) -> MenuItem:
+    """Resolve an exact SQL menu item id or exact item name for cart tools."""
+    settings = settings or get_settings()
+    await ensure_menu_catalog(settings)
+    engine = _get_engine(settings)
+    normalized = _normalized_menu_name(item_ref)
+
+    async with engine.connect() as conn:
+        row = (
+            await conn.execute(
+                select(MENU_ITEMS_TABLE).where(
+                    (MENU_ITEMS_TABLE.c.id == item_ref)
+                    | (MENU_ITEMS_TABLE.c.normalized_name == normalized)
+                )
+            )
+        ).mappings().first()
+
+    if row is None:
+        raise ValidationError(f"Unknown menu item: {item_ref}")
+
+    tags = list(row["tags"] or [])
+    for tag in (row["top_level"], row["section"], row["serving"]):
+        if tag and tag not in tags:
+            tags.append(tag)
+
+    return MenuItem(
+        id=row["id"],
+        name=row["name"],
+        category=row["section"],
+        price_inr=row["price_inr"],
+        available=row["available"],
+        tags=tags,
+    )
+
+
 async def save_cart_snapshot(
     session_id: str,
     cart: Cart,
@@ -1021,6 +1131,75 @@ async def clear_cart_snapshot(
         user_id=user_id,
         settings=settings,
     )
+
+
+async def delete_session_data(
+    session_id: str,
+    user_id: str = DEFAULT_USER_ID,
+    settings: Settings | None = None,
+) -> None:
+    """Delete persisted memory, cart, and order data for one user/session."""
+    settings = settings or get_settings()
+    engine = _get_engine(settings)
+    conversation_id = _storage_session_id(user_id, session_id)
+
+    async with engine.begin() as conn:
+        await conn.run_sync(APP_MEMORY_METADATA.create_all)
+
+        cart_ids = [
+            row.id
+            for row in (
+                await conn.execute(
+                    select(CARTS_TABLE.c.id).where(
+                        CARTS_TABLE.c.conversation_id == conversation_id
+                    )
+                )
+            )
+        ]
+        order_ids = [
+            row.id
+            for row in (
+                await conn.execute(
+                    select(ORDERS_TABLE.c.id).where(
+                        ORDERS_TABLE.c.conversation_id == conversation_id
+                    )
+                )
+            )
+        ]
+
+        if order_ids:
+            await conn.execute(
+                delete(ORDER_ITEMS_TABLE).where(
+                    ORDER_ITEMS_TABLE.c.order_id.in_(order_ids)
+                )
+            )
+        await conn.execute(
+            delete(ORDERS_TABLE).where(
+                ORDERS_TABLE.c.conversation_id == conversation_id
+            )
+        )
+
+        if cart_ids:
+            await conn.execute(
+                delete(CART_ITEMS_TABLE).where(CART_ITEMS_TABLE.c.cart_id.in_(cart_ids))
+            )
+        await conn.execute(
+            delete(CARTS_TABLE).where(CARTS_TABLE.c.conversation_id == conversation_id)
+        )
+
+        await conn.execute(
+            delete(CONVERSATION_SUMMARIES_TABLE).where(
+                CONVERSATION_SUMMARIES_TABLE.c.conversation_id == conversation_id
+            )
+        )
+        await conn.execute(
+            delete(CONVERSATION_MESSAGES_TABLE).where(
+                CONVERSATION_MESSAGES_TABLE.c.conversation_id == conversation_id
+            )
+        )
+        await conn.execute(
+            delete(CONVERSATIONS_TABLE).where(CONVERSATIONS_TABLE.c.id == conversation_id)
+        )
 
 
 async def save_order_snapshot(

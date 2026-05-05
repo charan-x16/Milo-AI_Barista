@@ -86,6 +86,7 @@ Conversation memory is stored in SQL using:
 - `conversations`
 - `conversation_messages`
 - `conversation_summaries`
+- `menu_items`
 - `carts`
 - `cart_items`
 - `orders`

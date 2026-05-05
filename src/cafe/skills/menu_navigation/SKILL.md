@@ -69,8 +69,8 @@ original Product Search request.
 For first menu-browsing replies, it should show sections first. When the user
 asks what is inside a section or asks for items under a named category, it
 should return the actual item names for that section. Treat "drinks" as
-"Beverages". Treat "cold beverages" or "cold drinks" as a browse request for
-the cold drink sections, not as a price request. Preserve returned category
+"Beverages". Treat "cold beverages", "cold drinks", or "cool drinks" as a
+browse request for the cold drink sections, not as a price request. Preserve returned category
 names instead of inventing or summarizing missing groups.
 If the browse result has `passthrough: false`, the requested wording did not
 match a canonical browse section. Do not show that browse output to the

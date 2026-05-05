@@ -27,6 +27,10 @@
 - **cold beverages:** Cold Brews, Cold Coffees, Shakes, Iced Teas, Mocktails
 - **cold drink:** Cold Brews, Cold Coffees, Shakes, Iced Teas, Mocktails
 - **cold drinks:** Cold Brews, Cold Coffees, Shakes, Iced Teas, Mocktails
+- **cool drink:** Cold Brews, Cold Coffees, Shakes, Iced Teas, Mocktails
+- **cool drinks:** Cold Brews, Cold Coffees, Shakes, Iced Teas, Mocktails
+- **cool beverage:** Cold Brews, Cold Coffees, Shakes, Iced Teas, Mocktails
+- **cool beverages:** Cold Brews, Cold Coffees, Shakes, Iced Teas, Mocktails
 
 ### Match Aliases
 

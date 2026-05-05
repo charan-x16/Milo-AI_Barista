@@ -221,6 +221,27 @@ async def test_browse_current_menu_request_routes_cold_beverages(store):
 
 
 @pytest.mark.asyncio
+async def test_browse_current_menu_request_routes_cool_drinks(store):
+    token = set_current_product_query("show me the cool drinks")
+    try:
+        data = payload(await browse_current_menu_request())
+    finally:
+        reset_current_product_query(token)
+
+    assert data["success"] is True
+    display_text = data["data"]["display_text"]
+    assert data["data"]["passthrough"] is True
+    assert data["data"]["requested_section"] == "cool drinks"
+    assert "Cold Brews:" in display_text
+    assert "Cold Coffees:" in display_text
+    assert "Shakes:" in display_text
+    assert "Iced Teas:" in display_text
+    assert "Mocktails:" in display_text
+    assert "\nCoffees:" not in display_text
+    assert "Hot Chocolate" not in display_text
+
+
+@pytest.mark.asyncio
 async def test_browse_current_menu_request_marks_unknown_browse_as_non_passthrough(store):
     token = set_current_product_query("any desserts")
     try:
@@ -459,6 +480,32 @@ async def test_add_to_cart_then_view_cart(store):
     assert data["success"] is True
     assert data["data"]["total_inr"] == 360
     assert data["data"]["item_count"] == 1
+
+
+@pytest.mark.asyncio
+async def test_add_to_cart_resolves_exact_menu_item_name_from_sql_catalog(store):
+    add_data = payload(await add_to_cart("s001", "Espresso", quantity=1))
+    cart_data = payload(await view_cart("s001"))
+
+    assert add_data["success"] is True
+    assert cart_data["success"] is True
+    assert cart_data["data"]["item_count"] == 1
+    assert cart_data["data"]["cart"]["items"][0]["name"] == "Espresso"
+    assert cart_data["data"]["cart"]["items"][0]["item_id"] == "menu-espresso"
+    assert cart_data["data"]["total_inr"] == 99
+
+    memory = memory_storage.load_memory("s001")
+    await memory._create_table()
+    async with memory.engine.connect() as conn:
+        saved_item = (
+            await conn.execute(
+                select(memory_storage.MENU_ITEMS_TABLE.c.name).where(
+                    memory_storage.MENU_ITEMS_TABLE.c.id == "menu-espresso"
+                )
+            )
+        ).scalar_one()
+
+    assert saved_item == "Espresso"
 
 
 @pytest.mark.asyncio

@@ -1,20 +1,20 @@
 from cafe.core.validator import ValidationError
 from cafe.models.cart import Cart, CartItem
+from cafe.models.menu import MenuItem
 from cafe.services.menu_service import get_item
 
 
-def add_item(
+def add_resolved_item(
     store,
     session_id: str,
-    item_id: str,
+    item: MenuItem,
     quantity: int = 1,
     customizations: list[str] | None = None,
 ) -> Cart:
-    """Validates quantity>0, item exists, item available, then adds it to cart."""
+    """Validates a resolved menu item and adds it to the active cart."""
     if quantity <= 0:
         raise ValidationError("Quantity must be positive.")
 
-    item = get_item(store, item_id)
     if not item.available:
         raise ValidationError(f"{item.name} is currently unavailable.")
 
@@ -22,7 +22,7 @@ def add_item(
     cart = store.get_cart(session_id)
 
     for line in cart.items:
-        if line.item_id == item_id and line.customizations == line_customizations:
+        if line.item_id == item.id and line.customizations == line_customizations:
             line.quantity += quantity
             return cart
 
@@ -36,6 +36,23 @@ def add_item(
         )
     )
     return cart
+
+
+def add_item(
+    store,
+    session_id: str,
+    item_id: str,
+    quantity: int = 1,
+    customizations: list[str] | None = None,
+) -> Cart:
+    """Validates quantity>0, item exists, item available, then adds it to cart."""
+    return add_resolved_item(
+        store,
+        session_id,
+        get_item(store, item_id),
+        quantity,
+        customizations,
+    )
 
 
 def remove_item(store, session_id: str, item_id: str) -> Cart:

@@ -11,6 +11,7 @@ from fastapi.responses import RedirectResponse
 
 from cafe import __version__
 from cafe.agents.llm import normalized_provider
+from cafe.agents.memory import DEFAULT_USER_ID, delete_session_data
 from cafe.agents.session_manager import get_session_manager
 from cafe.agents.specialist_tools import reset_specialists
 from cafe.api.debug import router as debug_router
@@ -101,6 +102,20 @@ async def get_orders(session_id: str):
         if order.session_id == session_id
     ]
     return {"session_id": session_id, "orders": orders}
+
+
+@app.post("/sessions/{session_id}/reset")
+async def reset_session(session_id: str, user_id: str = DEFAULT_USER_ID):
+    """Dev helper - clears one session from SQL memory and in-process state."""
+    await delete_session_data(session_id=session_id, user_id=user_id)
+    store = get_store()
+    store.carts.pop(session_id, None)
+    store.last_menu_scope.pop(session_id, None)
+    for order_id, order in list(store.orders.items()):
+        if order.session_id == session_id:
+            store.orders.pop(order_id, None)
+    get_session_manager().reset(session_id=session_id, user_id=user_id)
+    return {"status": "reset", "user_id": user_id, "session_id": session_id}
 
 
 @app.get("/menu")

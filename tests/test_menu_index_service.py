@@ -127,6 +127,20 @@ def test_menu_browse_query_routes_cold_beverages_to_cold_sections():
     assert "Hot Chocolate" not in text
 
 
+def test_menu_browse_query_routes_cool_drinks_to_cold_sections():
+    text = format_menu_browse_query("show me the cool drinks")
+
+    assert "Absolutely. Here are the matching sections for cool drinks:" in text
+    assert "Cold Brews:" in text
+    assert "Cold Coffees:" in text
+    assert "Shakes:" in text
+    assert "Iced Teas:" in text
+    assert "Mocktails:" in text
+    assert "\nCoffees:" not in text
+    assert "Herbal Teas:" not in text
+    assert "Hot Chocolate" not in text
+
+
 def test_search_menu_item_matches_finds_dessert_style_items():
     matches = search_menu_item_matches("any desserts", max_results=4)
     names = {item.name for item in matches}

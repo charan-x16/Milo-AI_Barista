@@ -271,6 +271,21 @@ DASHBOARD_HTML = """
       gap: 8px;
     }
 
+    .chat-actions {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      align-items: center;
+      margin-bottom: 10px;
+    }
+
+    .session-pill {
+      color: var(--muted);
+      font-family: "Cascadia Mono", Consolas, monospace;
+      font-size: 12px;
+      overflow-wrap: anywhere;
+    }
+
     .chat-form textarea {
       min-height: 46px;
       resize: vertical;
@@ -384,6 +399,11 @@ DASHBOARD_HTML = """
         <div class="panel">
           <h2 class="title">Chat Runner</h2>
           <p class="caption">Send a message here and watch each architecture component light up as the backend handles the turn.</p>
+          <div class="chat-actions">
+            <button id="new-chat" class="small-button" type="button">New Chat</button>
+            <button id="reset-session" class="small-button" type="button">Reset Current Session</button>
+            <span id="session-label" class="session-pill"></span>
+          </div>
           <div id="chat-log" class="chat-log"></div>
           <form id="chat-form" class="chat-form">
             <textarea id="message" placeholder="Try: Add one cappuccino to my cart"></textarea>
@@ -405,7 +425,7 @@ DASHBOARD_HTML = """
       <div id="components" class="kv"></div>
       <h2 class="title">StateStore</h2>
       <div id="state-store" class="kv"></div>
-      <button id="reset" class="small-button" type="button">Reset Trace + State</button>
+      <button id="reset" class="small-button" type="button">Reset All Trace + State</button>
     </aside>
   </div>
 
@@ -416,7 +436,10 @@ DASHBOARD_HTML = """
     const formEl = document.getElementById("chat-form");
     const messageEl = document.getElementById("message");
     const sendEl = document.getElementById("send");
+    const newChatEl = document.getElementById("new-chat");
+    const resetSessionEl = document.getElementById("reset-session");
     const resetEl = document.getElementById("reset");
+    const sessionLabelEl = document.getElementById("session-label");
     let currentSessionId = localStorage.getItem("milo_debug_session_id") || "";
     let latestState = null;
 
@@ -556,13 +579,24 @@ DASHBOARD_HTML = """
       chatLogEl.scrollTop = chatLogEl.scrollHeight;
     }
 
-    async function ensureSession() {
-      if (currentSessionId) return currentSessionId;
+    function renderSessionLabel() {
+      sessionLabelEl.textContent = currentSessionId
+        ? `session: ${currentSessionId}`
+        : "session: none";
+    }
+
+    async function createSession() {
       const res = await fetch("/sessions", { method: "POST" });
       const data = await res.json();
       currentSessionId = data.session_id;
       localStorage.setItem("milo_debug_session_id", currentSessionId);
+      renderSessionLabel();
       return currentSessionId;
+    }
+
+    async function ensureSession() {
+      if (currentSessionId) return currentSessionId;
+      return createSession();
     }
 
     formEl.addEventListener("submit", async event => {
@@ -588,10 +622,28 @@ DASHBOARD_HTML = """
       }
     });
 
+    newChatEl.addEventListener("click", async () => {
+      chatLogEl.innerHTML = "";
+      await createSession();
+      addBubble("agent", "Started a new clean chat session.");
+      await poll();
+    });
+
+    resetSessionEl.addEventListener("click", async () => {
+      const sessionId = await ensureSession();
+      await fetch(`/sessions/${encodeURIComponent(sessionId)}/reset`, {
+        method: "POST"
+      });
+      chatLogEl.innerHTML = "";
+      addBubble("agent", "Current session has been reset.");
+      await poll();
+    });
+
     resetEl.addEventListener("click", async () => {
       await fetch("/admin/reset", { method: "POST" });
       currentSessionId = "";
       localStorage.removeItem("milo_debug_session_id");
+      renderSessionLabel();
       chatLogEl.innerHTML = "";
       await poll();
     });
@@ -614,6 +666,7 @@ DASHBOARD_HTML = """
     }
 
     window.addEventListener("resize", () => latestState && renderFlow(latestState));
+    renderSessionLabel();
     poll();
   </script>
 </body>

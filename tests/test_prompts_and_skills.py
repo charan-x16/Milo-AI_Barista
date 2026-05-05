@@ -39,7 +39,7 @@ def test_category_prompts_preserve_complete_category_lists():
     assert "do not merge, rename, abbreviate, or summarize categories" in product_prompt
     assert "call `browse_current_menu_request()` first" in product_prompt
     assert "leave `include_items` unset so the user sees sections first" in product_prompt
-    assert '"show me the coffees", "show mocktails", "show pizza options", "show drinks", and "show cold beverages" are all browse requests' in product_prompt
+    assert '"show me the coffees", "show mocktails", "show pizza options", "show drinks", "show cold beverages", and "show cool drinks" are all browse requests' in product_prompt
     assert "Concise does not mean incomplete" in orchestrator_prompt
     assert "Do not merge categories" in orchestrator_prompt
 
