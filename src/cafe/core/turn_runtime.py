@@ -253,7 +253,12 @@ async def _run_turn_locked(
         {"context": context},
     )
 
-    msg = Msg(name="user", content=f"{context} {user_text}", role="user")
+    msg = Msg(
+        name="user",
+        content=f"{context} {user_text}",
+        role="user",
+        metadata={"display_text": user_text},
+    )
     memory_before = await _get_agent_memory(orchestrator)
     memory_before_count = len(memory_before)
 

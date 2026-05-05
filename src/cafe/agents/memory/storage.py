@@ -854,6 +854,8 @@ class AppSQLMemory(MemoryBase):
             await self._create_table()
             async with self.engine.begin() as conn:
                 sequence_no = await self._next_sequence(conn)
+                inserted_visible = False
+                title_candidate = None
                 for original in memories:
                     for msg in _split_mixed_tool_messages(original):
                         msg = _compact_tool_result_msg(msg)
@@ -882,6 +884,11 @@ class AppSQLMemory(MemoryBase):
                             and not msg.has_content_blocks("tool_result")
                             and msg.metadata.get("kind") != SUMMARY_MARK
                         )
+                        compact = _compact_content(msg)
+                        if visible:
+                            inserted_visible = True
+                            if msg.role == "user" and not title_candidate:
+                                title_candidate = compact
                         await conn.execute(
                             insert(CONVERSATION_MESSAGES_TABLE).values(
                                 id=msg.id,
@@ -891,7 +898,7 @@ class AppSQLMemory(MemoryBase):
                                 name=msg.name,
                                 message_type=_message_type(msg),
                                 content=msg.to_dict(),
-                                compact_content=_compact_content(msg),
+                                compact_content=compact,
                                 tool_call_id=_block_id(tool_block)
                                 if tool_block
                                 else None,
@@ -904,6 +911,20 @@ class AppSQLMemory(MemoryBase):
                             )
                         )
                         sequence_no += 1
+                if inserted_visible:
+                    current_title = await conn.scalar(
+                        select(CONVERSATIONS_TABLE.c.title).where(
+                            CONVERSATIONS_TABLE.c.id == self.conversation_id
+                        )
+                    )
+                    values = {"updated_at": func.now()}
+                    if not current_title and title_candidate:
+                        values["title"] = _truncate(title_candidate, 80)
+                    await conn.execute(
+                        update(CONVERSATIONS_TABLE)
+                        .where(CONVERSATIONS_TABLE.c.id == self.conversation_id)
+                        .values(**values)
+                    )
 
     async def delete(self, msg_ids: list[str], **kwargs: Any) -> int:
         if not msg_ids:
@@ -990,6 +1011,125 @@ def load_memory(
         session_id=session_id,
         keep_recent=_window_size(settings),
     )
+
+
+async def list_user_conversations(
+    user_id: str = DEFAULT_USER_ID,
+    *,
+    limit: int = 20,
+    settings: Settings | None = None,
+) -> list[dict[str, Any]]:
+    """Return recent SQL conversations for the frontend sidebar."""
+    settings = settings or get_settings()
+    engine = _get_engine(settings)
+    await ensure_menu_catalog(settings)
+
+    last_visible = (
+        select(
+            CONVERSATION_MESSAGES_TABLE.c.conversation_id,
+            func.max(CONVERSATION_MESSAGES_TABLE.c.sequence_no).label("last_sequence"),
+            func.count(CONVERSATION_MESSAGES_TABLE.c.id).label("message_count"),
+        )
+        .where(CONVERSATION_MESSAGES_TABLE.c.visible_to_user.is_(True))
+        .group_by(CONVERSATION_MESSAGES_TABLE.c.conversation_id)
+        .subquery()
+    )
+
+    query = (
+        select(
+            CONVERSATIONS_TABLE.c.session_id,
+            CONVERSATIONS_TABLE.c.title,
+            CONVERSATIONS_TABLE.c.status,
+            CONVERSATIONS_TABLE.c.created_at,
+            CONVERSATIONS_TABLE.c.updated_at,
+            last_visible.c.message_count,
+            CONVERSATION_MESSAGES_TABLE.c.compact_content.label("last_message"),
+        )
+        .select_from(
+            CONVERSATIONS_TABLE.outerjoin(
+                last_visible,
+                CONVERSATIONS_TABLE.c.id == last_visible.c.conversation_id,
+            ).outerjoin(
+                CONVERSATION_MESSAGES_TABLE,
+                (
+                    CONVERSATION_MESSAGES_TABLE.c.conversation_id
+                    == last_visible.c.conversation_id
+                )
+                & (
+                    CONVERSATION_MESSAGES_TABLE.c.sequence_no
+                    == last_visible.c.last_sequence
+                ),
+            )
+        )
+        .where(CONVERSATIONS_TABLE.c.user_id == user_id)
+        .order_by(CONVERSATIONS_TABLE.c.updated_at.desc())
+        .limit(limit)
+    )
+
+    async with engine.connect() as conn:
+        rows = (await conn.execute(query)).mappings().all()
+
+    conversations = []
+    for row in rows:
+        last_message = row["last_message"] or ""
+        conversations.append(
+            {
+                "session_id": row["session_id"],
+                "title": row["title"] or last_message or "New chat",
+                "status": row["status"],
+                "created_at": row["created_at"],
+                "updated_at": row["updated_at"],
+                "last_message": last_message,
+                "message_count": int(row["message_count"] or 0),
+            }
+        )
+    return conversations
+
+
+async def list_conversation_messages(
+    session_id: str,
+    user_id: str = DEFAULT_USER_ID,
+    *,
+    limit: int = 200,
+    settings: Settings | None = None,
+) -> list[dict[str, Any]]:
+    """Return visible user/assistant messages for one conversation."""
+    settings = settings or get_settings()
+    engine = _get_engine(settings)
+    conversation_id = _storage_session_id(user_id, session_id)
+
+    async with engine.begin() as conn:
+        await conn.run_sync(APP_MEMORY_METADATA.create_all)
+        rows = (
+            await conn.execute(
+                select(
+                    CONVERSATION_MESSAGES_TABLE.c.id,
+                    CONVERSATION_MESSAGES_TABLE.c.sequence_no,
+                    CONVERSATION_MESSAGES_TABLE.c.role,
+                    CONVERSATION_MESSAGES_TABLE.c.name,
+                    CONVERSATION_MESSAGES_TABLE.c.compact_content,
+                    CONVERSATION_MESSAGES_TABLE.c.created_at,
+                )
+                .where(
+                    CONVERSATION_MESSAGES_TABLE.c.conversation_id == conversation_id,
+                    CONVERSATION_MESSAGES_TABLE.c.visible_to_user.is_(True),
+                )
+                .order_by(CONVERSATION_MESSAGES_TABLE.c.sequence_no)
+                .limit(limit)
+            )
+        ).mappings().all()
+
+    return [
+        {
+            "id": row["id"],
+            "sequence_no": row["sequence_no"],
+            "role": row["role"],
+            "name": row["name"],
+            "content": row["compact_content"] or "",
+            "created_at": row["created_at"],
+        }
+        for row in rows
+    ]
 
 
 async def ensure_menu_catalog(settings: Settings | None = None) -> None:

@@ -1,9 +1,12 @@
+import asyncio
 import os
 
 import pytest
+from agentscope.message import Msg
 from fastapi.testclient import TestClient
 
 from cafe.api.main import app
+from cafe.agents.memory import load_memory
 from cafe.core.state import get_store
 from cafe.services.cart_service import add_item
 
@@ -44,6 +47,40 @@ def test_reset_session_clears_current_cart(client):
 
     assert response.status_code == 200
     assert client.get("/sessions/abc/cart").json()["total_inr"] == 0
+
+
+def test_conversation_history_apis_return_sql_memory(client):
+    async def seed_memory():
+        memory = load_memory("history-session", user_id="anonymous")
+        await memory.clear()
+        await memory.add(
+            [
+                Msg(
+                    "user",
+                    "[session_id=history-session] show menu",
+                    "user",
+                    metadata={"display_text": "show menu"},
+                ),
+                Msg("assistant", "Of course. Here are the menu sections.", "assistant"),
+            ]
+        )
+
+    asyncio.run(seed_memory())
+
+    conversations = client.get("/users/anonymous/conversations").json()
+    messages = client.get("/sessions/history-session/messages").json()
+
+    assert conversations["user_id"] == "anonymous"
+    assert conversations["conversations"][0]["session_id"] == "history-session"
+    assert conversations["conversations"][0]["title"] == "show menu"
+    assert conversations["conversations"][0]["last_message"] == (
+        "Of course. Here are the menu sections."
+    )
+    assert [msg["role"] for msg in messages["messages"]] == ["user", "assistant"]
+    assert messages["messages"][0]["content"] == "show menu"
+    assert messages["messages"][1]["content"] == (
+        "Of course. Here are the menu sections."
+    )
 
 
 def test_chat_validation(client):

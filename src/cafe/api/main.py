@@ -5,13 +5,18 @@ import time
 import uuid
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import RedirectResponse
 
 from cafe import __version__
 from cafe.agents.llm import normalized_provider
-from cafe.agents.memory import DEFAULT_USER_ID, delete_session_data
+from cafe.agents.memory import (
+    DEFAULT_USER_ID,
+    delete_session_data,
+    list_conversation_messages,
+    list_user_conversations,
+)
 from cafe.agents.session_manager import get_session_manager
 from cafe.agents.specialist_tools import reset_specialists
 from cafe.api.debug import router as debug_router
@@ -102,6 +107,36 @@ async def get_orders(session_id: str):
         if order.session_id == session_id
     ]
     return {"session_id": session_id, "orders": orders}
+
+
+@app.get("/users/{user_id}/conversations")
+async def get_conversations(
+    user_id: str,
+    limit: int = Query(default=20, ge=1, le=100),
+):
+    """Frontend sidebar: recent conversations for a user."""
+    return {
+        "user_id": user_id,
+        "conversations": await list_user_conversations(user_id=user_id, limit=limit),
+    }
+
+
+@app.get("/sessions/{session_id}/messages")
+async def get_messages(
+    session_id: str,
+    user_id: str = DEFAULT_USER_ID,
+    limit: int = Query(default=200, ge=1, le=500),
+):
+    """Frontend chat history: visible user/assistant messages for a session."""
+    return {
+        "user_id": user_id,
+        "session_id": session_id,
+        "messages": await list_conversation_messages(
+            session_id=session_id,
+            user_id=user_id,
+            limit=limit,
+        ),
+    }
 
 
 @app.post("/sessions/{session_id}/reset")
