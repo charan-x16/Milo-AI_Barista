@@ -2,9 +2,11 @@
 
 ## What This Is
 
-Milo Barista is a 5-agent cafe ordering system built with AgentScope, FastAPI, Pydantic v2, Qdrant, and SQL-backed conversation memory.
+Milo Barista is a 5-agent cafe ordering system built with AgentScope,
+FastAPI, Pydantic v2, Qdrant, and SQL-backed short-term memory.
 
-It uses one Orchestrator agent as the supervisor, with four specialist ReActAgents exposed to it as tools:
+It uses one Orchestrator agent as the supervisor, with four specialist
+ReActAgents exposed to it as tools:
 
 - Product Search Agent
 - Cart Management Agent
@@ -21,8 +23,8 @@ FastAPI API
 src/cafe/api/main.py
     |
     v
-7-step control loop
-src/cafe/core/control_loop.py
+Turn runtime
+src/cafe/core/turn_runtime.py
     |
     v
 Per-session Orchestrator
@@ -60,9 +62,12 @@ Synchronous services
 src/cafe/services/
     |
     v
-Pydantic models + in-memory StateStore
+Pydantic models + hybrid state
 src/cafe/models/
 src/cafe/core/state.py
+    |
+    +--> SQL persistence
+         src/cafe/agents/memory/
 ```
 
 ## Quickstart
@@ -78,9 +83,11 @@ uv run uvicorn cafe.api.main:app --reload
 
 The API will be available at `http://127.0.0.1:8000`.
 
+Interactive docs are available at `http://127.0.0.1:8000/docs`.
+
 ## Database Memory
 
-Conversation memory is stored in SQL using:
+Conversation memory and frontend history data are stored in SQL using:
 
 - `users`
 - `conversations`
@@ -92,8 +99,8 @@ Conversation memory is stored in SQL using:
 - `orders`
 - `order_items`
 
-Configure the database with `MEMORY_DATABASE_URL` in `.env`. Local SQLite works
-by default; Neon/Postgres should run migrations before serving traffic:
+Configure the database with `MEMORY_DATABASE_URL` in `.env`. Local SQLite
+works by default; Neon/Postgres should run migrations before serving traffic:
 
 ```bash
 uv run alembic upgrade head
@@ -104,6 +111,72 @@ To test migrations against a temporary database without using `.env`:
 ```bash
 uv run alembic -x database_url=sqlite+aiosqlite:///./tmp/alembic-test.sqlite3 upgrade head
 ```
+
+Recent messages stay exact, older messages are compressed into
+`conversation_summaries`, and frontend history reads from `conversations` plus
+`conversation_messages`.
+
+## Frontend APIs
+
+Base URL in local development:
+
+```text
+http://127.0.0.1:8000
+```
+
+Primary frontend endpoints:
+
+- `POST /sessions`
+  Creates a new chat session.
+- `POST /chat`
+  Sends one user message and returns the assistant reply.
+- `GET /sessions/{session_id}/cart`
+  Returns the current cart for the session.
+- `GET /sessions/{session_id}/orders`
+  Returns orders created in the session.
+- `GET /users/{user_id}/conversations`
+  Returns recent conversations for sidebar/history UI.
+- `GET /sessions/{session_id}/messages?user_id=anonymous`
+  Returns visible chat messages for one conversation.
+- `POST /sessions/{session_id}/reset`
+  Dev helper that clears SQL memory and in-process state for one session.
+
+Example chat request:
+
+```json
+{
+  "user_id": "anonymous",
+  "session_id": "abc123",
+  "message": "show me the menu"
+}
+```
+
+Example frontend flow:
+
+1. `POST /sessions`
+2. Save returned `session_id`
+3. `POST /chat` with that `session_id`
+4. Use `GET /users/{user_id}/conversations` for recent chats
+5. Use `GET /sessions/{session_id}/messages` when reopening an old chat
+6. Use cart and order endpoints to drive side panels
+
+## Sharing Locally
+
+Run the API locally:
+
+```bash
+uv run uvicorn cafe.api.main:app --host 127.0.0.1 --port 8000
+```
+
+Expose it with ngrok:
+
+```powershell
+& "$env:LOCALAPPDATA\Microsoft\WinGet\Links\ngrok.exe" http 8000
+```
+
+Use the generated `https://...ngrok-free.app` URL as the frontend base URL.
+The OpenAPI schema is available at `/openapi.json`, and the interactive docs
+are available at `/docs`.
 
 ## RAG Indexing
 
@@ -140,44 +213,50 @@ EMBEDDING_DIMENSIONS=384
 ## The 7-Step Flow
 
 1. `task_classification`: the Orchestrator's first ReAct thought, guided by `src/cafe/agents/agent_md/orchestrator.md`.
-2. `context_retrieval`: `_build_context()` in `src/cafe/core/control_loop.py` adds session id, cart snapshot, and recent orders.
+2. `context_retrieval`: `_build_context()` in `src/cafe/core/turn_runtime.py` adds session id, cart snapshot, and recent orders.
 3. `planning`: handled inside the Orchestrator ReAct loop in `src/cafe/agents/orchestrator.py`.
-4. `execution loop`: `run_turn()` awaits the Orchestrator in `src/cafe/core/control_loop.py`.
+4. `execution loop`: `run_turn()` awaits the Orchestrator in `src/cafe/core/turn_runtime.py`.
 5. `tool_calls`: Orchestrator delegates to specialist tools in `src/cafe/agents/specialist_tools.py`; specialists call grouped domain tools in `src/cafe/tools/`.
-6. `validation`: services raise `ValidationError`, tools wrap failures in `ToolResult.fail`; Phase 2 critic hook is marked in `src/cafe/core/control_loop.py`.
-7. `state_update + output`: services update `StateStore`, and `run_turn()` assembles reply, tool calls, and optional critique payload.
+6. `validation`: services raise `ValidationError`, tools wrap failures in `ToolResult.fail`; Phase 2 critic hook is marked in `src/cafe/core/turn_runtime.py`.
+7. `state_update + output`: services update `StateStore`, SQL memory persists messages/cart/orders, and `run_turn()` assembles reply, tool calls, and optional critique payload.
 
 ## Folder Layout
 
 ```text
 backend/
-├── scripts/
-│   ├── setup_qdrant.py
-│   └── index_rag.py
-├── src/
-│   └── cafe/
-│       ├── agents/
-│       │   ├── agent_md/
-│       │   ├── specialists/
-│       │   ├── orchestrator.py
-│       │   ├── prompts.py
-│       │   ├── session_manager.py
-│       │   └── specialist_tools.py
-│       ├── api/
-│       │   ├── main.py
-│       │   └── schemas.py
-│       ├── core/
-│       │   ├── control_loop.py
-│       │   ├── state.py
-│       │   └── validator.py
-│       ├── models/
-│       ├── services/
-│       ├── skills/
-│       └── tools/
-├── tests/
-├── .env.example
-├── pyproject.toml
-└── README.md
+|- scripts/
+|  |- setup_qdrant.py
+|  `- index_rag.py
+|- src/
+|  `- cafe/
+|     |- agents/
+|     |  |- agent_md/
+|     |  |- memory/
+|     |  |- specialists/
+|     |  |- orchestrator.py
+|     |  |- prompts.py
+|     |  |- session_manager.py
+|     |  `- specialist_tools.py
+|     |- api/
+|     |  |- debug.py
+|     |  |- debug_dashboard.py
+|     |  |- main.py
+|     |  `- schemas.py
+|     |- core/
+|     |  |- debug_trace.py
+|     |  |- state.py
+|     |  |- turn_runtime.py
+|     |  `- validator.py
+|     |- models/
+|     |- services/
+|     |- skills/
+|     `- tools/
+|- migrations/
+|- tests/
+|- .env.example
+|- alembic.ini
+|- pyproject.toml
+`- README.md
 ```
 
 ## Testing
@@ -198,9 +277,10 @@ The full suite needs `LLM_API_KEY` for `tests/test_api.py::test_chat_end_to_end`
 
 ## Phase 2 (TODO)
 
-Add an LLM critic at the validation step in `src/cafe/core/control_loop.py`.
+Add an LLM critic at the validation step in `src/cafe/core/turn_runtime.py`.
 
-The hook is already wired through `enable_critic`; it currently returns a placeholder PASS only when a mutating Orchestrator-level tool was used.
+The hook is already wired through `enable_critic`; it currently returns a
+placeholder PASS only when a mutating Orchestrator-level tool was used.
 
 ## Not In This Prototype
 
