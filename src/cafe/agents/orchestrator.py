@@ -1,5 +1,7 @@
 """The supervisor agent. Tools are the four specialists."""
 
+from functools import lru_cache
+
 from agentscope.agent import ReActAgent
 from agentscope.tool import Toolkit
 
@@ -20,6 +22,7 @@ from cafe.agents.specialist_tools import (
 from cafe.config import get_settings
 
 
+@lru_cache(maxsize=1)
 def _make_toolkit() -> Toolkit:
     tk = Toolkit()
     tk.register_tool_function(ask_product_agent)
@@ -37,7 +40,7 @@ def make_orchestrator(
     return ReActAgent(
         name="Orchestrator",
         sys_prompt=ORCHESTRATOR_PROMPT,
-        model=make_chat_model(s),
+        model=make_chat_model(s, agent_name="Orchestrator"),
         formatter=make_chat_formatter(s),
         toolkit=_make_toolkit(),
         memory=load_memory(session_id=session_id, user_id=user_id, settings=s),

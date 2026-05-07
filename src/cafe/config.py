@@ -54,6 +54,10 @@ class Settings(BaseSettings):
     qdrant_product_collection: str = "btb_product_menu"
     qdrant_menu_attributes_collection: str = "btb_menu_attributes"
     qdrant_support_collection: str = "btb_company_policies"
+    redis_url: str = Field(
+        default="",
+        validation_alias=AliasChoices("REDIS_URL", "CACHE_REDIS_URL"),
+    )
     log_level: str = "INFO"
     memory_database_url: str = "sqlite+aiosqlite:///./data/memory/milo_memory.sqlite3"
     memory_max_prompt_tokens: int = 90000

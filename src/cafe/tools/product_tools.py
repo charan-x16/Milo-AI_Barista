@@ -3,6 +3,7 @@ from contextvars import ContextVar
 
 from agentscope.tool import ToolResponse
 
+from cafe.core.observability import observe_tool
 from cafe.core.state import get_store
 from cafe.core.validator import ValidationError
 from cafe.models.tool_io import ToolResult
@@ -92,6 +93,7 @@ def _retrieve_knowledge_source(source_key: str, query: str, max_results: int) ->
     return build_rag_service().retrieve(source.collection_name, query, limit=max_results)
 
 
+@observe_tool("browse_menu")
 async def browse_menu(query: str, include_items: bool | None = None) -> ToolResponse:
     """Browse the menu index from a natural customer request.
 
@@ -120,6 +122,7 @@ async def browse_menu(query: str, include_items: bool | None = None) -> ToolResp
         return wrap(ToolResult.fail(f"Menu browse error: {e}"))
 
 
+@observe_tool("browse_current_menu_request")
 async def browse_current_menu_request(include_items: bool | None = None) -> ToolResponse:
     """Browse the menu using the original Product Search request.
 
@@ -146,6 +149,7 @@ async def browse_current_menu_request(include_items: bool | None = None) -> Tool
     return response
 
 
+@observe_tool("filter_current_menu_by_price")
 async def filter_current_menu_by_price() -> ToolResponse:
     """Filter menu items by the price limit in the original Product Search request.
 
@@ -180,6 +184,7 @@ async def filter_current_menu_by_price() -> ToolResponse:
     )
 
 
+@observe_tool("list_current_menu_prices")
 async def list_current_menu_prices() -> ToolResponse:
     """List menu prices for the original Product Search request.
 
@@ -216,6 +221,7 @@ async def list_current_menu_prices() -> ToolResponse:
     )
 
 
+@observe_tool("find_current_menu_matches")
 async def find_current_menu_matches(max_results: int = 5) -> ToolResponse:
     """Find canonical menu items that match the current product request.
 
@@ -253,6 +259,7 @@ async def find_current_menu_matches(max_results: int = 5) -> ToolResponse:
         return wrap(ToolResult.fail(f"Menu item match error: {e}"))
 
 
+@observe_tool("recommend_current_menu_items")
 async def recommend_current_menu_items(max_results: int = 5) -> ToolResponse:
     """Return data-derived representative menu recommendations.
 
@@ -284,6 +291,7 @@ async def recommend_current_menu_items(max_results: int = 5) -> ToolResponse:
         return wrap(ToolResult.fail(f"Menu recommendation error: {e}"))
 
 
+@observe_tool("list_menu_categories")
 async def list_menu_categories(
     include_items: bool = False,
     include_structured: bool = False,
@@ -312,6 +320,7 @@ async def list_menu_categories(
         return wrap(ToolResult.fail(f"Menu category index error: {e}"))
 
 
+@observe_tool("list_menu_section_items")
 async def list_menu_section_items(section_name: str) -> ToolResponse:
     """List item names inside one menu section or section group.
 
@@ -331,6 +340,7 @@ async def list_menu_section_items(section_name: str) -> ToolResponse:
         return wrap(ToolResult.fail(f"Menu section item error: {e}"))
 
 
+@observe_tool("search_products")
 async def search_products(query: str, max_results: int = 5) -> ToolResponse:
     """Search the menu.
 
@@ -353,6 +363,7 @@ async def search_products(query: str, max_results: int = 5) -> ToolResponse:
         return wrap(ToolResult.fail(f"Unexpected error: {e}"))
 
 
+@observe_tool("get_product_details")
 async def get_product_details(item_id: str) -> ToolResponse:
     """Full details for a single menu item by id.
 
@@ -374,6 +385,7 @@ async def get_product_details(item_id: str) -> ToolResponse:
         return wrap(ToolResult.fail(f"Unexpected error: {e}"))
 
 
+@observe_tool("search_product_knowledge")
 async def search_product_knowledge(query: str, max_results: int = 5) -> ToolResponse:
     """Retrieve menu knowledge from the product Qdrant collection.
 
@@ -394,6 +406,7 @@ async def search_product_knowledge(query: str, max_results: int = 5) -> ToolResp
         return wrap(ToolResult.fail(f"RAG retrieval error: {e}"))
 
 
+@observe_tool("search_menu_attribute_knowledge")
 async def search_menu_attribute_knowledge(query: str, max_results: int = 5) -> ToolResponse:
     """Retrieve taste, ingredient, allergen, and suitability attributes.
 
@@ -414,6 +427,7 @@ async def search_menu_attribute_knowledge(query: str, max_results: int = 5) -> T
         return wrap(ToolResult.fail(f"RAG retrieval error: {e}"))
 
 
+@observe_tool("search_product_and_attribute_knowledge")
 async def search_product_and_attribute_knowledge(query: str, max_results: int = 5) -> ToolResponse:
     """Retrieve menu facts and menu attributes in parallel.
 

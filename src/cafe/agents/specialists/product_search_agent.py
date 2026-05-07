@@ -1,6 +1,7 @@
 """Product Search specialist - handles menu RAG lookups."""
 
 import json
+from functools import lru_cache
 from pathlib import Path
 
 from agentscope.agent import ReActAgent
@@ -70,6 +71,7 @@ def _menu_answer_postprocess(_tool_call, tool_response: ToolResponse) -> ToolRes
     return ToolResponse(content=[TextBlock(type="text", text=rendered)])
 
 
+@lru_cache(maxsize=1)
 def _make_toolkit() -> Toolkit:
     tk = Toolkit()
     tk.register_tool_function(
@@ -105,7 +107,7 @@ def make_product_search_agent() -> ReActAgent:
     return ReActAgent(
         name="ProductSearchAgent",
         sys_prompt=PRODUCT_SEARCH_PROMPT,
-        model=make_chat_model(s),
+        model=make_chat_model(s, agent_name="ProductSearchAgent"),
         formatter=make_multi_agent_formatter(s),
         toolkit=_make_toolkit(),
         memory=InMemoryMemory(),

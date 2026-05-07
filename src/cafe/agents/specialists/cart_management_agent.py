@@ -1,5 +1,6 @@
 """Cart Management specialist - handles cart operations."""
 
+from functools import lru_cache
 from pathlib import Path
 
 from agentscope.agent import ReActAgent
@@ -16,6 +17,7 @@ from cafe.tools.cart_tools import add_to_cart, clear_cart, remove_from_cart, vie
 _SKILL_DIR = Path(__file__).resolve().parents[2] / "skills" / "cart_etiquette"
 
 
+@lru_cache(maxsize=1)
 def _make_toolkit() -> Toolkit:
     tk = Toolkit()
     tk.register_tool_function(add_to_cart)
@@ -32,7 +34,7 @@ def make_cart_management_agent() -> ReActAgent:
     return ReActAgent(
         name="CartManagementAgent",
         sys_prompt=CART_MANAGEMENT_PROMPT,
-        model=make_chat_model(s),
+        model=make_chat_model(s, agent_name="CartManagementAgent"),
         formatter=make_multi_agent_formatter(s),
         toolkit=_make_toolkit(),
         memory=InMemoryMemory(),

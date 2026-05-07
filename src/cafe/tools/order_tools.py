@@ -1,5 +1,6 @@
 from agentscope.tool import ToolResponse
 
+from cafe.core.observability import observe_tool
 from cafe.core.state import get_store
 from cafe.core.validator import ValidationError
 from cafe.agents.memory import clear_cart_snapshot, save_order_snapshot
@@ -8,6 +9,7 @@ from cafe.services import order_service
 from cafe.tools._wrap import wrap
 
 
+@observe_tool("place_order")
 async def place_order(session_id: str, max_budget_inr: int | None = None) -> ToolResponse:
     """Place an order from the current cart.
 
@@ -32,6 +34,7 @@ async def place_order(session_id: str, max_budget_inr: int | None = None) -> Too
         return wrap(ToolResult.fail(f"Unexpected error: {e}"))
 
 
+@observe_tool("track_order")
 async def track_order(order_id: str) -> ToolResponse:
     """Get the current status and details for an order.
 
@@ -54,6 +57,7 @@ async def track_order(order_id: str) -> ToolResponse:
         return wrap(ToolResult.fail(f"Unexpected error: {e}"))
 
 
+@observe_tool("cancel_order")
 async def cancel_order(order_id: str) -> ToolResponse:
     """Cancel a pending or confirmed order.
 

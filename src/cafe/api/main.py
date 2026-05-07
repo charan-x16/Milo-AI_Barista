@@ -22,9 +22,11 @@ from cafe.agents.specialist_tools import reset_specialists
 from cafe.api.debug import router as debug_router
 from cafe.api.schemas import ChatRequest, ChatResponse
 from cafe.config import get_settings
-from cafe.core.turn_runtime import run_turn
+from cafe.core.background_tasks import drain_background_tasks, session_task_key
 from cafe.core.debug_trace import get_debug_trace_store
+from cafe.core.startup import initialize_persistent_storage, initialize_runtime_resources
 from cafe.core.state import get_store, reset_store
+from cafe.core.turn_runtime import run_turn
 
 
 log = logging.getLogger("cafe")
@@ -35,8 +37,11 @@ async def lifespan(app: FastAPI):
     s = get_settings()
     logging.basicConfig(level=s.log_level)
     get_store()
+    initialize_runtime_resources(s)
+    await initialize_persistent_storage(s)
     log.info("Milo Barista ready (provider=%s model=%s)", normalized_provider(s), s.openai_model)
     yield
+    await drain_background_tasks(timeout=10.0)
 
 
 app = FastAPI(title="Milo Barista", version=__version__, lifespan=lifespan)
@@ -115,6 +120,7 @@ async def get_conversations(
     limit: int = Query(default=20, ge=1, le=100),
 ):
     """Frontend sidebar: recent conversations for a user."""
+    await drain_background_tasks(timeout=2.0)
     return {
         "user_id": user_id,
         "conversations": await list_user_conversations(user_id=user_id, limit=limit),
@@ -128,6 +134,10 @@ async def get_messages(
     limit: int = Query(default=200, ge=1, le=500),
 ):
     """Frontend chat history: visible user/assistant messages for a session."""
+    await drain_background_tasks(
+        key=session_task_key(user_id, session_id),
+        timeout=2.0,
+    )
     return {
         "user_id": user_id,
         "session_id": session_id,
@@ -142,6 +152,10 @@ async def get_messages(
 @app.post("/sessions/{session_id}/reset")
 async def reset_session(session_id: str, user_id: str = DEFAULT_USER_ID):
     """Dev helper - clears one session from SQL memory and in-process state."""
+    await drain_background_tasks(
+        key=session_task_key(user_id, session_id),
+        timeout=5.0,
+    )
     await delete_session_data(session_id=session_id, user_id=user_id)
     store = get_store()
     store.carts.pop(session_id, None)
@@ -161,6 +175,7 @@ async def get_menu():
 @app.post("/admin/reset")
 async def admin_reset():
     """Dev only - clears carts and orders, resets specialist agents."""
+    await drain_background_tasks(timeout=5.0)
     reset_store()
     get_store()
     reset_specialists()

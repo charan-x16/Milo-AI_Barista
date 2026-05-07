@@ -11,6 +11,7 @@ from inspect import isawaitable
 from agentscope.message import Msg, TextBlock
 from agentscope.tool import ToolResponse
 
+from cafe.core.observability import observe_tool
 from cafe.agents.specialists.cart_management_agent import make_cart_management_agent
 from cafe.agents.specialists.customer_support_agent import make_customer_support_agent
 from cafe.agents.specialists.order_management_agent import make_order_management_agent
@@ -187,6 +188,7 @@ async def _ask(agent, query: str) -> ToolResponse:
     return ToolResponse(content=[TextBlock(type="text", text=text or str(reply))])
 
 
+@observe_tool("ask_product_agent")
 async def ask_product_agent(query: str) -> ToolResponse:
     """Delegate a menu/product question to the Product Search specialist.
 
@@ -212,6 +214,7 @@ async def ask_product_agent(query: str) -> ToolResponse:
         reset_current_product_session_id(session_token)
 
 
+@observe_tool("ask_cart_agent")
 async def ask_cart_agent(query: str) -> ToolResponse:
     """Delegate a cart operation to the Cart Management specialist.
 
@@ -228,6 +231,7 @@ async def ask_cart_agent(query: str) -> ToolResponse:
     return await _ask(make_cart_management_agent(), query)
 
 
+@observe_tool("ask_order_agent")
 async def ask_order_agent(query: str) -> ToolResponse:
     """Delegate an order operation to the Order Management specialist.
 
@@ -244,6 +248,7 @@ async def ask_order_agent(query: str) -> ToolResponse:
     return await _ask(make_order_management_agent(), query)
 
 
+@observe_tool("ask_support_agent")
 async def ask_support_agent(query: str) -> ToolResponse:
     """Delegate an FAQ to the Customer Support specialist.
 

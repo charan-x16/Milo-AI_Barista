@@ -1,5 +1,6 @@
 """Order Management specialist - handles order lifecycle operations."""
 
+from functools import lru_cache
 from pathlib import Path
 
 from agentscope.agent import ReActAgent
@@ -16,6 +17,7 @@ from cafe.tools.order_tools import cancel_order, place_order, track_order
 _SKILL_DIR = Path(__file__).resolve().parents[2] / "skills" / "order_lifecycle"
 
 
+@lru_cache(maxsize=1)
 def _make_toolkit() -> Toolkit:
     tk = Toolkit()
     tk.register_tool_function(place_order)
@@ -31,7 +33,7 @@ def make_order_management_agent() -> ReActAgent:
     return ReActAgent(
         name="OrderManagementAgent",
         sys_prompt=ORDER_MANAGEMENT_PROMPT,
-        model=make_chat_model(s),
+        model=make_chat_model(s, agent_name="OrderManagementAgent"),
         formatter=make_multi_agent_formatter(s),
         toolkit=_make_toolkit(),
         memory=InMemoryMemory(),

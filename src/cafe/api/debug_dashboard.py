@@ -446,19 +446,18 @@ DASHBOARD_HTML = """
     const descriptions = {
       client: "Browser, API client, or test sends a chat request.",
       api: "FastAPI validates request and calls the turn runtime.",
-      turn_runtime: "Runs routing, specialist execution, tracing, and final validation.",
+      turn_runtime: "Runs deterministic routing, optional single-call fallback, tracing, and final validation.",
       context: "Adds session id, cart snapshot, and recent orders.",
-      session_manager: "Reuses the per-session Orchestrator.",
-      orchestrator: "Routes the request to the owning specialist.",
-      specialists: "Product, cart, order, or support agent returns the answer.",
-      tools: "Typed functions that mutate or read domain state.",
+      fast_router: "Matches common cafe intents and calls handlers directly.",
+      single_llm: "Formats complex unmatched requests with at most one LLM call.",
+      tools: "Typed handlers that mutate or read domain state.",
       state_store: "In-memory carts, orders, and menu.",
       critic: "Optional validation hook after mutating actions.",
       response: "Final payload returned to the client."
     };
 
-    const mainFlow = ["client", "api", "turn_runtime", "orchestrator", "specialists", "tools", "state_store", "critic", "response"];
-    const branchFlow = ["context", "session_manager"];
+    const mainFlow = ["client", "api", "turn_runtime", "fast_router", "tools", "state_store", "critic", "response"];
+    const branchFlow = ["context", "single_llm"];
 
     function escapeHtml(value) {
       return String(value ?? "").replace(/[&<>"']/g, char => ({
@@ -546,7 +545,7 @@ DASHBOARD_HTML = """
         ["model", state.runtime.model],
         ["active sessions", state.runtime.active_sessions.length],
         ["prompt cap", state.runtime.memory_max_prompt_tokens],
-        ["compression", state.runtime.memory_compression_trigger_tokens],
+        ["compression", "off hot path"],
         ["exact recent", state.runtime.memory_keep_recent_messages]
       ].map(([key, value]) => `<div class="row"><span>${key}</span><strong>${escapeHtml(value)}</strong></div>`).join("");
 

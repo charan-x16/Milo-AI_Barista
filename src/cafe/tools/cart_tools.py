@@ -1,5 +1,6 @@
 from agentscope.tool import ToolResponse
 
+from cafe.core.observability import observe_tool
 from cafe.core.state import get_store
 from cafe.core.validator import ValidationError
 from cafe.agents.memory import (
@@ -12,6 +13,7 @@ from cafe.services import cart_service
 from cafe.tools._wrap import wrap
 
 
+@observe_tool("add_to_cart")
 async def add_to_cart(
     session_id: str,
     item_id: str,
@@ -60,6 +62,7 @@ async def add_to_cart(
         return wrap(ToolResult.fail(f"Unexpected error: {e}"))
 
 
+@observe_tool("remove_from_cart")
 async def remove_from_cart(session_id: str, item_id: str) -> ToolResponse:
     """Remove all units of a menu item from the cart.
 
@@ -83,6 +86,7 @@ async def remove_from_cart(session_id: str, item_id: str) -> ToolResponse:
         return wrap(ToolResult.fail(f"Unexpected error: {e}"))
 
 
+@observe_tool("view_cart")
 async def view_cart(session_id: str) -> ToolResponse:
     """View the current cart.
 
@@ -105,6 +109,7 @@ async def view_cart(session_id: str) -> ToolResponse:
         return wrap(ToolResult.fail(f"Unexpected error: {e}"))
 
 
+@observe_tool("clear_cart")
 async def clear_cart(session_id: str) -> ToolResponse:
     """Clear the current cart.
 

@@ -9,6 +9,7 @@ from agentscope.model import (
 )
 
 from cafe.config import Settings, get_settings
+from cafe.core.observability import ObservedChatModel
 
 
 _PROVIDER_ALIASES = {
@@ -43,7 +44,11 @@ def _require_api_key(settings: Settings, provider: str) -> str:
     return settings.openai_api_key
 
 
-def make_chat_model(settings: Settings | None = None):
+def make_chat_model(
+    settings: Settings | None = None,
+    *,
+    agent_name: str = "unknown_agent",
+):
     """Create the chat model configured by LLM_PROVIDER/LLM_MODEL/LLM_API_KEY."""
 
     s = settings or get_settings()
@@ -53,40 +58,55 @@ def make_chat_model(settings: Settings | None = None):
 
     if provider in {"openai", "deepseek", "groq", "openrouter"}:
         client_kwargs = {"base_url": base_url} if base_url else None
-        return OpenAIChatModel(
-            model_name=model_name,
-            api_key=_require_api_key(s, provider),
-            stream=False,
-            client_kwargs=client_kwargs,
+        return ObservedChatModel(
+            OpenAIChatModel(
+                model_name=model_name,
+                api_key=_require_api_key(s, provider),
+                stream=False,
+                client_kwargs=client_kwargs,
+            ),
+            agent_name=agent_name,
         )
 
     if provider == "anthropic":
-        return AnthropicChatModel(
-            model_name=model_name,
-            api_key=_require_api_key(s, provider),
-            stream=False,
+        return ObservedChatModel(
+            AnthropicChatModel(
+                model_name=model_name,
+                api_key=_require_api_key(s, provider),
+                stream=False,
+            ),
+            agent_name=agent_name,
         )
 
     if provider == "gemini":
-        return GeminiChatModel(
-            model_name=model_name,
-            api_key=_require_api_key(s, provider),
-            stream=False,
+        return ObservedChatModel(
+            GeminiChatModel(
+                model_name=model_name,
+                api_key=_require_api_key(s, provider),
+                stream=False,
+            ),
+            agent_name=agent_name,
         )
 
     if provider == "ollama":
-        return OllamaChatModel(
-            model_name=model_name,
-            stream=False,
-            host=base_url or None,
+        return ObservedChatModel(
+            OllamaChatModel(
+                model_name=model_name,
+                stream=False,
+                host=base_url or None,
+            ),
+            agent_name=agent_name,
         )
 
     if provider == "dashscope":
-        return DashScopeChatModel(
-            model_name=model_name,
-            api_key=_require_api_key(s, provider),
-            stream=False,
-            base_http_api_url=base_url or None,
+        return ObservedChatModel(
+            DashScopeChatModel(
+                model_name=model_name,
+                api_key=_require_api_key(s, provider),
+                stream=False,
+                base_http_api_url=base_url or None,
+            ),
+            agent_name=agent_name,
         )
 
     supported = "openai, deepseek, groq, openrouter, anthropic, google/gemini, ollama, dashscope"

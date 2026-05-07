@@ -39,7 +39,10 @@ from sqlalchemy import (
 )
 from sqlalchemy.engine import make_url
 from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
+from sqlalchemy.dialects.postgresql import insert as postgresql_insert
+from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
+from cafe.core.observability import observed_span
 from cafe.core.validator import ValidationError
 from cafe.models.cart import Cart
 from cafe.models.menu import MenuItem
@@ -56,6 +59,10 @@ COMPRESSED_MARK = "compressed"
 TOOL_RESULT_MAX_CHARS = 2000
 
 _ENGINE: AsyncEngine | None = None
+_SCHEMA_INITIALIZED = False
+_MENU_CATALOG_INITIALIZED = False
+_ENSURED_CONVERSATIONS: set[tuple[str, str]] = set()
+_STORAGE_INIT_LOCK = asyncio.Lock()
 APP_MEMORY_METADATA = MetaData()
 
 USERS_TABLE = Table(
@@ -316,8 +323,51 @@ def _get_engine(settings: Settings) -> AsyncEngine:
         url, connect_args = _normalize_async_database_url(
             settings.memory_database_url,
         )
-        _ENGINE = create_async_engine(url, pool_pre_ping=True, **connect_args)
+        engine_kwargs: dict[str, Any] = {"pool_pre_ping": True, **connect_args}
+        if url.startswith("postgresql+asyncpg"):
+            engine_kwargs.update(pool_size=5, max_overflow=10, pool_recycle=1800)
+        _ENGINE = create_async_engine(url, **engine_kwargs)
     return _ENGINE
+
+
+def _reset_storage_runtime_cache() -> None:
+    """Reset module caches when tests swap databases."""
+    global _ENGINE, _SCHEMA_INITIALIZED, _MENU_CATALOG_INITIALIZED
+    _ENGINE = None
+    _SCHEMA_INITIALIZED = False
+    _MENU_CATALOG_INITIALIZED = False
+    _ENSURED_CONVERSATIONS.clear()
+
+
+def _insert_ignore(table: Table, values: dict[str, Any], dialect_name: str):
+    """Build a cross-dialect insert that ignores duplicate-key conflicts."""
+    if dialect_name == "postgresql":
+        return postgresql_insert(table).values(**values).on_conflict_do_nothing()
+    if dialect_name == "sqlite":
+        return sqlite_insert(table).values(**values).on_conflict_do_nothing()
+    return insert(table).values(**values)
+
+
+async def _ensure_schema(engine: AsyncEngine) -> None:
+    global _SCHEMA_INITIALIZED
+    if _SCHEMA_INITIALIZED:
+        return
+
+    async with _STORAGE_INIT_LOCK:
+        if _SCHEMA_INITIALIZED:
+            return
+
+        with observed_span("sql", "sql.schema_init"):
+            async with engine.begin() as conn:
+                await conn.run_sync(APP_MEMORY_METADATA.create_all)
+
+        _SCHEMA_INITIALIZED = True
+
+
+async def ensure_storage_ready(settings: Settings | None = None) -> None:
+    """Create app SQL tables once per process, preferably during startup."""
+    settings = settings or get_settings()
+    await _ensure_schema(_get_engine(settings))
 
 
 def _block_type(block: Any) -> str | None:
@@ -596,56 +646,67 @@ class AppSQLMemory(MemoryBase):
         if self._initialized:
             return
 
-        async with self.engine.begin() as conn:
-            await conn.run_sync(APP_MEMORY_METADATA.create_all)
-            user_exists = await conn.scalar(
-                select(USERS_TABLE.c.id).where(USERS_TABLE.c.id == self.user_id)
-            )
-            if not user_exists:
-                await conn.execute(
-                    insert(USERS_TABLE).values(
-                        id=self.user_id,
-                        external_user_id=self.user_id,
-                        metadata={},
-                    )
-                )
+        await _ensure_schema(self.engine)
+        conversation_key = (self.user_id, self.conversation_id)
+        if conversation_key in _ENSURED_CONVERSATIONS:
+            self._initialized = True
+            return
 
-            conversation_exists = await conn.scalar(
-                select(CONVERSATIONS_TABLE.c.id).where(
-                    CONVERSATIONS_TABLE.c.id == self.conversation_id
-                )
-            )
-            if not conversation_exists:
-                await conn.execute(
-                    insert(CONVERSATIONS_TABLE).values(
-                        id=self.conversation_id,
-                        user_id=self.user_id,
-                        session_id=self.session_id,
-                        status="active",
-                        metadata={},
-                    )
-                )
+        async with _STORAGE_INIT_LOCK:
+            if conversation_key in _ENSURED_CONVERSATIONS:
+                self._initialized = True
+                return
 
-        self._initialized = True
+            with observed_span("sql", "sql.ensure_conversation"):
+                async with self.engine.begin() as conn:
+                    dialect_name = conn.dialect.name
+                    await conn.execute(
+                        _insert_ignore(
+                            USERS_TABLE,
+                            {
+                                "id": self.user_id,
+                                "external_user_id": self.user_id,
+                                "metadata": {},
+                            },
+                            dialect_name,
+                        )
+                    )
+                    await conn.execute(
+                        _insert_ignore(
+                            CONVERSATIONS_TABLE,
+                            {
+                                "id": self.conversation_id,
+                                "user_id": self.user_id,
+                                "session_id": self.session_id,
+                                "status": "active",
+                                "metadata": {},
+                            },
+                            dialect_name,
+                        )
+                    )
+
+            _ENSURED_CONVERSATIONS.add(conversation_key)
+            self._initialized = True
 
     async def _hydrate_summary(self) -> None:
         if self._summary_hydrated:
             return
 
         await self._create_table()
-        async with self.engine.connect() as conn:
-            row = (
-                await conn.execute(
-                    select(CONVERSATION_SUMMARIES_TABLE.c.summary)
-                    .where(
-                        CONVERSATION_SUMMARIES_TABLE.c.conversation_id
-                        == self.conversation_id,
-                        CONVERSATION_SUMMARIES_TABLE.c.is_active.is_(True),
+        with observed_span("sql", "sql.hydrate_summary"):
+            async with self.engine.connect() as conn:
+                row = (
+                    await conn.execute(
+                        select(CONVERSATION_SUMMARIES_TABLE.c.summary)
+                        .where(
+                            CONVERSATION_SUMMARIES_TABLE.c.conversation_id
+                            == self.conversation_id,
+                            CONVERSATION_SUMMARIES_TABLE.c.is_active.is_(True),
+                        )
+                        .order_by(CONVERSATION_SUMMARIES_TABLE.c.summary_version.desc())
+                        .limit(1)
                     )
-                    .order_by(CONVERSATION_SUMMARIES_TABLE.c.summary_version.desc())
-                    .limit(1)
-                )
-            ).first()
+                ).first()
 
         self._compressed_summary = row.summary if row else ""
         self._summary_hydrated = True
@@ -660,17 +721,19 @@ class AppSQLMemory(MemoryBase):
 
     async def _fetch_message_rows(self) -> list[dict[str, Any]]:
         await self._create_table()
-        async with self.engine.connect() as conn:
-            rows = (
-                await conn.execute(
-                    select(CONVERSATION_MESSAGES_TABLE)
-                    .where(
-                        CONVERSATION_MESSAGES_TABLE.c.conversation_id
-                        == self.conversation_id
+        with observed_span("sql", "sql.fetch_messages") as span:
+            async with self.engine.connect() as conn:
+                rows = (
+                    await conn.execute(
+                        select(CONVERSATION_MESSAGES_TABLE)
+                        .where(
+                            CONVERSATION_MESSAGES_TABLE.c.conversation_id
+                            == self.conversation_id
+                        )
+                        .order_by(CONVERSATION_MESSAGES_TABLE.c.sequence_no)
                     )
-                    .order_by(CONVERSATION_MESSAGES_TABLE.c.sequence_no)
-                )
-            ).mappings().all()
+                ).mappings().all()
+            span.update(row_count=len(rows))
         return [dict(row) for row in rows]
 
     def _msg_from_row(self, row: dict[str, Any]) -> Msg:
@@ -709,61 +772,65 @@ class AppSQLMemory(MemoryBase):
         # persists it for restarts and UI history.
         await self._create_table()
         await super().update_compressed_summary(summary)
-        async with self._lock:
-            async with self.engine.begin() as conn:
-                await conn.execute(
-                    update(CONVERSATION_SUMMARIES_TABLE)
-                    .where(
-                        CONVERSATION_SUMMARIES_TABLE.c.conversation_id
-                        == self.conversation_id
+        with observed_span("sql", "sql.update_summary"):
+            async with self._lock:
+                async with self.engine.begin() as conn:
+                    await conn.execute(
+                        update(CONVERSATION_SUMMARIES_TABLE)
+                        .where(
+                            CONVERSATION_SUMMARIES_TABLE.c.conversation_id
+                            == self.conversation_id
+                        )
+                        .values(is_active=False)
                     )
-                    .values(is_active=False)
-                )
-                next_version = (
-                    await conn.scalar(
-                        select(
-                            func.max(
-                                CONVERSATION_SUMMARIES_TABLE.c.summary_version
+                    next_version = (
+                        await conn.scalar(
+                            select(
+                                func.max(
+                                    CONVERSATION_SUMMARIES_TABLE.c.summary_version
+                                )
+                            ).where(
+                                CONVERSATION_SUMMARIES_TABLE.c.conversation_id
+                                == self.conversation_id
                             )
-                        ).where(
+                        )
+                        or 0
+                    ) + 1
+                    await conn.execute(
+                        insert(CONVERSATION_SUMMARIES_TABLE).values(
+                            id=sha256(
+                                f"{self.conversation_id}:{next_version}".encode(
+                                    "utf-8"
+                                )
+                            ).hexdigest(),
+                            conversation_id=self.conversation_id,
+                            summary=summary,
+                            summary_version=next_version,
+                            source_message_start=None,
+                            source_message_end=None,
+                            is_active=True,
+                            metadata={"kind": SUMMARY_MARK},
+                        )
+                    )
+        self._summary_hydrated = True
+
+    async def clear(self) -> None:
+        with observed_span("sql", "sql.memory_clear"):
+            async with self._lock:
+                await self._create_table()
+                async with self.engine.begin() as conn:
+                    await conn.execute(
+                        delete(CONVERSATION_SUMMARIES_TABLE).where(
                             CONVERSATION_SUMMARIES_TABLE.c.conversation_id
                             == self.conversation_id
                         )
                     )
-                    or 0
-                ) + 1
-                await conn.execute(
-                    insert(CONVERSATION_SUMMARIES_TABLE).values(
-                        id=sha256(
-                            f"{self.conversation_id}:{next_version}".encode("utf-8")
-                        ).hexdigest(),
-                        conversation_id=self.conversation_id,
-                        summary=summary,
-                        summary_version=next_version,
-                        source_message_start=None,
-                        source_message_end=None,
-                        is_active=True,
-                        metadata={"kind": SUMMARY_MARK},
+                    await conn.execute(
+                        delete(CONVERSATION_MESSAGES_TABLE).where(
+                            CONVERSATION_MESSAGES_TABLE.c.conversation_id
+                            == self.conversation_id
+                        )
                     )
-                )
-        self._summary_hydrated = True
-
-    async def clear(self) -> None:
-        async with self._lock:
-            await self._create_table()
-            async with self.engine.begin() as conn:
-                await conn.execute(
-                    delete(CONVERSATION_SUMMARIES_TABLE).where(
-                        CONVERSATION_SUMMARIES_TABLE.c.conversation_id
-                        == self.conversation_id
-                    )
-                )
-                await conn.execute(
-                    delete(CONVERSATION_MESSAGES_TABLE).where(
-                        CONVERSATION_MESSAGES_TABLE.c.conversation_id
-                        == self.conversation_id
-                    )
-                )
         self._compressed_summary = ""
         self._summary_hydrated = True
 
@@ -771,15 +838,16 @@ class AppSQLMemory(MemoryBase):
         await self._create_table()
         marks = [mark] if isinstance(mark, str) else mark
         if SUMMARY_MARK in marks:
-            async with self.engine.begin() as conn:
-                await conn.execute(
-                    update(CONVERSATION_SUMMARIES_TABLE)
-                    .where(
-                        CONVERSATION_SUMMARIES_TABLE.c.conversation_id
-                        == self.conversation_id
+            with observed_span("sql", "sql.delete_summary_mark"):
+                async with self.engine.begin() as conn:
+                    await conn.execute(
+                        update(CONVERSATION_SUMMARIES_TABLE)
+                        .where(
+                            CONVERSATION_SUMMARIES_TABLE.c.conversation_id
+                            == self.conversation_id
+                        )
+                        .values(is_active=False)
                     )
-                    .values(is_active=False)
-                )
             self._compressed_summary = ""
             self._summary_hydrated = True
 
@@ -850,109 +918,120 @@ class AppSQLMemory(MemoryBase):
 
         base_marks = [marks] if isinstance(marks, str) else list(marks or [])
         skip_duplicated = kwargs.get("skip_duplicated", True)
-        async with self._lock:
-            await self._create_table()
-            async with self.engine.begin() as conn:
-                sequence_no = await self._next_sequence(conn)
-                inserted_visible = False
-                title_candidate = None
-                for original in memories:
-                    for msg in _split_mixed_tool_messages(original):
-                        msg = _compact_tool_result_msg(msg)
-                        if skip_duplicated and await conn.scalar(
-                            select(CONVERSATION_MESSAGES_TABLE.c.id).where(
-                                CONVERSATION_MESSAGES_TABLE.c.id == msg.id
+        with observed_span("sql", "sql.memory_add") as span:
+            async with self._lock:
+                await self._create_table()
+                async with self.engine.begin() as conn:
+                    sequence_no = await self._next_sequence(conn)
+                    inserted_visible = False
+                    title_candidate = None
+                    inserted_count = 0
+                    for original in memories:
+                        for msg in _split_mixed_tool_messages(original):
+                            msg = _compact_tool_result_msg(msg)
+                            if skip_duplicated and await conn.scalar(
+                                select(CONVERSATION_MESSAGES_TABLE.c.id).where(
+                                    CONVERSATION_MESSAGES_TABLE.c.id == msg.id
+                                )
+                            ):
+                                continue
+
+                            msg_marks = list(base_marks)
+                            if msg.has_content_blocks("tool_use"):
+                                msg_marks.append(TOOL_CALL_MARK)
+                            if msg.has_content_blocks("tool_result"):
+                                msg_marks.append(TOOL_RESULT_MARK)
+
+                            tool_use = next(
+                                iter(msg.get_content_blocks("tool_use")),
+                                None,
                             )
-                        ):
-                            continue
-
-                        msg_marks = list(base_marks)
-                        if msg.has_content_blocks("tool_use"):
-                            msg_marks.append(TOOL_CALL_MARK)
-                        if msg.has_content_blocks("tool_result"):
-                            msg_marks.append(TOOL_RESULT_MARK)
-
-                        tool_use = next(iter(msg.get_content_blocks("tool_use")), None)
-                        tool_result = next(
-                            iter(msg.get_content_blocks("tool_result")),
-                            None,
+                            tool_result = next(
+                                iter(msg.get_content_blocks("tool_result")),
+                                None,
+                            )
+                            tool_block = tool_use or tool_result
+                            visible = (
+                                msg.role in {"user", "assistant"}
+                                and not msg.has_content_blocks("tool_use")
+                                and not msg.has_content_blocks("tool_result")
+                                and msg.metadata.get("kind") != SUMMARY_MARK
+                            )
+                            compact = _compact_content(msg)
+                            if visible:
+                                inserted_visible = True
+                                if msg.role == "user" and not title_candidate:
+                                    title_candidate = compact
+                            await conn.execute(
+                                insert(CONVERSATION_MESSAGES_TABLE).values(
+                                    id=msg.id,
+                                    conversation_id=self.conversation_id,
+                                    sequence_no=sequence_no,
+                                    role=msg.role,
+                                    name=msg.name,
+                                    message_type=_message_type(msg),
+                                    content=msg.to_dict(),
+                                    compact_content=compact,
+                                    tool_call_id=_block_id(tool_block)
+                                    if tool_block
+                                    else None,
+                                    tool_name=_tool_name(tool_block)
+                                    if tool_block
+                                    else None,
+                                    marks=sorted(set(msg_marks)),
+                                    visible_to_user=visible,
+                                    metadata=msg.metadata,
+                                )
+                            )
+                            sequence_no += 1
+                            inserted_count += 1
+                    if inserted_visible:
+                        current_title = await conn.scalar(
+                            select(CONVERSATIONS_TABLE.c.title).where(
+                                CONVERSATIONS_TABLE.c.id == self.conversation_id
+                            )
                         )
-                        tool_block = tool_use or tool_result
-                        visible = (
-                            msg.role in {"user", "assistant"}
-                            and not msg.has_content_blocks("tool_use")
-                            and not msg.has_content_blocks("tool_result")
-                            and msg.metadata.get("kind") != SUMMARY_MARK
-                        )
-                        compact = _compact_content(msg)
-                        if visible:
-                            inserted_visible = True
-                            if msg.role == "user" and not title_candidate:
-                                title_candidate = compact
+                        values = {"updated_at": func.now()}
+                        if not current_title and title_candidate:
+                            values["title"] = _truncate(title_candidate, 80)
                         await conn.execute(
-                            insert(CONVERSATION_MESSAGES_TABLE).values(
-                                id=msg.id,
-                                conversation_id=self.conversation_id,
-                                sequence_no=sequence_no,
-                                role=msg.role,
-                                name=msg.name,
-                                message_type=_message_type(msg),
-                                content=msg.to_dict(),
-                                compact_content=compact,
-                                tool_call_id=_block_id(tool_block)
-                                if tool_block
-                                else None,
-                                tool_name=_tool_name(tool_block)
-                                if tool_block
-                                else None,
-                                marks=sorted(set(msg_marks)),
-                                visible_to_user=visible,
-                                metadata=msg.metadata,
-                            )
+                            update(CONVERSATIONS_TABLE)
+                            .where(CONVERSATIONS_TABLE.c.id == self.conversation_id)
+                            .values(**values)
                         )
-                        sequence_no += 1
-                if inserted_visible:
-                    current_title = await conn.scalar(
-                        select(CONVERSATIONS_TABLE.c.title).where(
-                            CONVERSATIONS_TABLE.c.id == self.conversation_id
-                        )
-                    )
-                    values = {"updated_at": func.now()}
-                    if not current_title and title_candidate:
-                        values["title"] = _truncate(title_candidate, 80)
-                    await conn.execute(
-                        update(CONVERSATIONS_TABLE)
-                        .where(CONVERSATIONS_TABLE.c.id == self.conversation_id)
-                        .values(**values)
-                    )
+                    span.update(inserted_count=inserted_count)
 
     async def delete(self, msg_ids: list[str], **kwargs: Any) -> int:
         if not msg_ids:
             return 0
         await self._create_table()
-        async with self._lock:
-            async with self.engine.begin() as conn:
-                result = await conn.execute(
-                    delete(CONVERSATION_MESSAGES_TABLE).where(
-                        CONVERSATION_MESSAGES_TABLE.c.conversation_id
-                        == self.conversation_id,
-                        CONVERSATION_MESSAGES_TABLE.c.id.in_(msg_ids),
+        with observed_span("sql", "sql.memory_delete") as span:
+            async with self._lock:
+                async with self.engine.begin() as conn:
+                    result = await conn.execute(
+                        delete(CONVERSATION_MESSAGES_TABLE).where(
+                            CONVERSATION_MESSAGES_TABLE.c.conversation_id
+                            == self.conversation_id,
+                            CONVERSATION_MESSAGES_TABLE.c.id.in_(msg_ids),
+                        )
                     )
-                )
-        return result.rowcount or 0
+            deleted_count = result.rowcount or 0
+            span.update(deleted_count=deleted_count)
+            return deleted_count
 
     async def size(self) -> int:
         await self._create_table()
-        async with self.engine.connect() as conn:
-            return int(
-                await conn.scalar(
-                    select(func.count(CONVERSATION_MESSAGES_TABLE.c.id)).where(
-                        CONVERSATION_MESSAGES_TABLE.c.conversation_id
-                        == self.conversation_id
+        with observed_span("sql", "sql.memory_size"):
+            async with self.engine.connect() as conn:
+                return int(
+                    await conn.scalar(
+                        select(func.count(CONVERSATION_MESSAGES_TABLE.c.id)).where(
+                            CONVERSATION_MESSAGES_TABLE.c.conversation_id
+                            == self.conversation_id
+                        )
                     )
+                    or 0
                 )
-                or 0
-            )
 
     async def update_messages_mark(
         self,
@@ -963,35 +1042,37 @@ class AppSQLMemory(MemoryBase):
         await self._create_table()
         rows = await self._fetch_message_rows()
         updated = 0
-        async with self._lock:
-            async with self.engine.begin() as conn:
-                for row in rows:
-                    if msg_ids is not None and row["id"] not in msg_ids:
-                        continue
-                    marks = list(row.get("marks") or [])
-                    if old_mark is not None and old_mark not in marks:
-                        continue
+        with observed_span("sql", "sql.update_message_marks") as span:
+            async with self._lock:
+                async with self.engine.begin() as conn:
+                    for row in rows:
+                        if msg_ids is not None and row["id"] not in msg_ids:
+                            continue
+                        marks = list(row.get("marks") or [])
+                        if old_mark is not None and old_mark not in marks:
+                            continue
 
-                    changed = False
-                    if new_mark is None:
-                        if old_mark in marks:
-                            marks.remove(old_mark)
-                            changed = True
-                    else:
-                        if old_mark is not None and old_mark in marks:
-                            marks.remove(old_mark)
-                            changed = True
-                        if new_mark not in marks:
-                            marks.append(new_mark)
-                            changed = True
+                        changed = False
+                        if new_mark is None:
+                            if old_mark in marks:
+                                marks.remove(old_mark)
+                                changed = True
+                        else:
+                            if old_mark is not None and old_mark in marks:
+                                marks.remove(old_mark)
+                                changed = True
+                            if new_mark not in marks:
+                                marks.append(new_mark)
+                                changed = True
 
-                    if changed:
-                        await conn.execute(
-                            update(CONVERSATION_MESSAGES_TABLE)
-                            .where(CONVERSATION_MESSAGES_TABLE.c.id == row["id"])
-                            .values(marks=sorted(set(marks)))
-                        )
-                        updated += 1
+                        if changed:
+                            await conn.execute(
+                                update(CONVERSATION_MESSAGES_TABLE)
+                                .where(CONVERSATION_MESSAGES_TABLE.c.id == row["id"])
+                                .values(marks=sorted(set(marks)))
+                            )
+                            updated += 1
+            span.update(updated_count=updated)
         return updated
 
     async def close(self) -> None:
@@ -1022,7 +1103,7 @@ async def list_user_conversations(
     """Return recent SQL conversations for the frontend sidebar."""
     settings = settings or get_settings()
     engine = _get_engine(settings)
-    await ensure_menu_catalog(settings)
+    await ensure_storage_ready(settings)
 
     last_visible = (
         select(
@@ -1066,8 +1147,10 @@ async def list_user_conversations(
         .limit(limit)
     )
 
-    async with engine.connect() as conn:
-        rows = (await conn.execute(query)).mappings().all()
+    with observed_span("sql", "sql.list_conversations") as span:
+        async with engine.connect() as conn:
+            rows = (await conn.execute(query)).mappings().all()
+        span.update(row_count=len(rows))
 
     conversations = []
     for row in rows:
@@ -1098,26 +1181,29 @@ async def list_conversation_messages(
     engine = _get_engine(settings)
     conversation_id = _storage_session_id(user_id, session_id)
 
-    async with engine.begin() as conn:
-        await conn.run_sync(APP_MEMORY_METADATA.create_all)
-        rows = (
-            await conn.execute(
-                select(
-                    CONVERSATION_MESSAGES_TABLE.c.id,
-                    CONVERSATION_MESSAGES_TABLE.c.sequence_no,
-                    CONVERSATION_MESSAGES_TABLE.c.role,
-                    CONVERSATION_MESSAGES_TABLE.c.name,
-                    CONVERSATION_MESSAGES_TABLE.c.compact_content,
-                    CONVERSATION_MESSAGES_TABLE.c.created_at,
+    await ensure_storage_ready(settings)
+    with observed_span("sql", "sql.list_messages") as span:
+        async with engine.connect() as conn:
+            rows = (
+                await conn.execute(
+                    select(
+                        CONVERSATION_MESSAGES_TABLE.c.id,
+                        CONVERSATION_MESSAGES_TABLE.c.sequence_no,
+                        CONVERSATION_MESSAGES_TABLE.c.role,
+                        CONVERSATION_MESSAGES_TABLE.c.name,
+                        CONVERSATION_MESSAGES_TABLE.c.compact_content,
+                        CONVERSATION_MESSAGES_TABLE.c.created_at,
+                    )
+                    .where(
+                        CONVERSATION_MESSAGES_TABLE.c.conversation_id
+                        == conversation_id,
+                        CONVERSATION_MESSAGES_TABLE.c.visible_to_user.is_(True),
+                    )
+                    .order_by(CONVERSATION_MESSAGES_TABLE.c.sequence_no)
+                    .limit(limit)
                 )
-                .where(
-                    CONVERSATION_MESSAGES_TABLE.c.conversation_id == conversation_id,
-                    CONVERSATION_MESSAGES_TABLE.c.visible_to_user.is_(True),
-                )
-                .order_by(CONVERSATION_MESSAGES_TABLE.c.sequence_no)
-                .limit(limit)
-            )
-        ).mappings().all()
+            ).mappings().all()
+        span.update(row_count=len(rows))
 
     return [
         {
@@ -1134,34 +1220,57 @@ async def list_conversation_messages(
 
 async def ensure_menu_catalog(settings: Settings | None = None) -> None:
     """Seed SQL menu_items from the canonical parsed menu document."""
+    global _MENU_CATALOG_INITIALIZED
+    if _MENU_CATALOG_INITIALIZED:
+        return
+
     settings = settings or get_settings()
     engine = _get_engine(settings)
-    async with engine.begin() as conn:
-        await conn.run_sync(APP_MEMORY_METADATA.create_all)
-        existing_count = await conn.scalar(select(func.count(MENU_ITEMS_TABLE.c.id)))
-        if existing_count:
-            return
+    await ensure_storage_ready(settings)
 
-        for item in build_menu_item_match_index():
-            price = _first_price_inr(item.price)
-            if price is None:
-                continue
-            await conn.execute(
-                insert(MENU_ITEMS_TABLE).values(
-                    id=_menu_item_id(item.name),
-                    name=item.name,
-                    normalized_name=_normalized_menu_name(item.name),
-                    top_level=item.top_level,
-                    section=item.section,
-                    price_inr=price,
-                    serving=item.serving,
-                    dietary_tags=item.dietary_tags,
-                    tags=list(item.tags),
-                    description=item.description,
-                    available=True,
-                    metadata={"source": "BTB_Menu_Enhanced.md"},
+    with observed_span("sql", "sql.ensure_menu_catalog") as span:
+        async with _STORAGE_INIT_LOCK:
+            if _MENU_CATALOG_INITIALIZED:
+                span.update(cached=True, seeded_count=0)
+                return
+
+            async with engine.begin() as conn:
+                existing_count = await conn.scalar(
+                    select(func.count(MENU_ITEMS_TABLE.c.id))
                 )
-            )
+                if existing_count:
+                    _MENU_CATALOG_INITIALIZED = True
+                    span.update(existing_count=int(existing_count), seeded_count=0)
+                    return
+
+                seeded_count = 0
+                for item in build_menu_item_match_index():
+                    price = _first_price_inr(item.price)
+                    if price is None:
+                        continue
+                    await conn.execute(
+                        _insert_ignore(
+                            MENU_ITEMS_TABLE,
+                            {
+                                "id": _menu_item_id(item.name),
+                                "name": item.name,
+                                "normalized_name": _normalized_menu_name(item.name),
+                                "top_level": item.top_level,
+                                "section": item.section,
+                                "price_inr": price,
+                                "serving": item.serving,
+                                "dietary_tags": item.dietary_tags,
+                                "tags": list(item.tags),
+                                "description": item.description,
+                                "available": True,
+                                "metadata": {"source": "BTB_Menu_Enhanced.md"},
+                            },
+                            conn.dialect.name,
+                        )
+                    )
+                    seeded_count += 1
+                _MENU_CATALOG_INITIALIZED = True
+                span.update(existing_count=0, seeded_count=seeded_count)
 
 
 async def resolve_menu_item_for_cart(
@@ -1174,15 +1283,17 @@ async def resolve_menu_item_for_cart(
     engine = _get_engine(settings)
     normalized = _normalized_menu_name(item_ref)
 
-    async with engine.connect() as conn:
-        row = (
-            await conn.execute(
-                select(MENU_ITEMS_TABLE).where(
-                    (MENU_ITEMS_TABLE.c.id == item_ref)
-                    | (MENU_ITEMS_TABLE.c.normalized_name == normalized)
+    with observed_span("sql", "sql.resolve_menu_item") as span:
+        async with engine.connect() as conn:
+            row = (
+                await conn.execute(
+                    select(MENU_ITEMS_TABLE).where(
+                        (MENU_ITEMS_TABLE.c.id == item_ref)
+                        | (MENU_ITEMS_TABLE.c.normalized_name == normalized)
+                    )
                 )
-            )
-        ).mappings().first()
+            ).mappings().first()
+        span.update(found=row is not None)
 
     if row is None:
         raise ValidationError(f"Unknown menu item: {item_ref}")
@@ -1213,50 +1324,52 @@ async def save_cart_snapshot(
     await memory._create_table()
 
     cart_id = _cart_id(memory.conversation_id)
-    async with memory._lock:
-        async with memory.engine.begin() as conn:
-            exists = await conn.scalar(
-                select(CARTS_TABLE.c.id).where(CARTS_TABLE.c.id == cart_id)
-            )
-            values = {
-                "conversation_id": memory.conversation_id,
-                "user_id": user_id,
-                "session_id": session_id,
-                "status": "active",
-                "total_inr": cart.total_inr,
-                "metadata": {},
-            }
-            if exists:
-                await conn.execute(
-                    update(CARTS_TABLE)
-                    .where(CARTS_TABLE.c.id == cart_id)
-                    .values(**values, updated_at=func.now())
+    with observed_span("sql", "sql.save_cart_snapshot") as span:
+        async with memory._lock:
+            async with memory.engine.begin() as conn:
+                exists = await conn.scalar(
+                    select(CARTS_TABLE.c.id).where(CARTS_TABLE.c.id == cart_id)
                 )
-            else:
-                await conn.execute(insert(CARTS_TABLE).values(id=cart_id, **values))
-
-            await conn.execute(
-                delete(CART_ITEMS_TABLE).where(CART_ITEMS_TABLE.c.cart_id == cart_id)
-            )
-            for index, item in enumerate(cart.items):
-                await conn.execute(
-                    insert(CART_ITEMS_TABLE).values(
-                        id=_line_id(
-                            cart_id,
-                            index,
-                            item.item_id,
-                            item.customizations,
-                        ),
-                        cart_id=cart_id,
-                        item_id=item.item_id,
-                        name=item.name,
-                        unit_price_inr=item.unit_price_inr,
-                        quantity=item.quantity,
-                        customizations=item.customizations,
-                        line_total_inr=item.line_total_inr,
-                        metadata={},
+                values = {
+                    "conversation_id": memory.conversation_id,
+                    "user_id": user_id,
+                    "session_id": session_id,
+                    "status": "active",
+                    "total_inr": cart.total_inr,
+                    "metadata": {},
+                }
+                if exists:
+                    await conn.execute(
+                        update(CARTS_TABLE)
+                        .where(CARTS_TABLE.c.id == cart_id)
+                        .values(**values, updated_at=func.now())
                     )
+                else:
+                    await conn.execute(insert(CARTS_TABLE).values(id=cart_id, **values))
+
+                await conn.execute(
+                    delete(CART_ITEMS_TABLE).where(CART_ITEMS_TABLE.c.cart_id == cart_id)
                 )
+                for index, item in enumerate(cart.items):
+                    await conn.execute(
+                        insert(CART_ITEMS_TABLE).values(
+                            id=_line_id(
+                                cart_id,
+                                index,
+                                item.item_id,
+                                item.customizations,
+                            ),
+                            cart_id=cart_id,
+                            item_id=item.item_id,
+                            name=item.name,
+                            unit_price_inr=item.unit_price_inr,
+                            quantity=item.quantity,
+                            customizations=item.customizations,
+                            line_total_inr=item.line_total_inr,
+                            metadata={},
+                        )
+                    )
+        span.update(item_count=len(cart.items), total_inr=cart.total_inr)
 
 
 async def clear_cart_snapshot(
@@ -1283,63 +1396,70 @@ async def delete_session_data(
     engine = _get_engine(settings)
     conversation_id = _storage_session_id(user_id, session_id)
 
-    async with engine.begin() as conn:
-        await conn.run_sync(APP_MEMORY_METADATA.create_all)
-
-        cart_ids = [
-            row.id
-            for row in (
-                await conn.execute(
-                    select(CARTS_TABLE.c.id).where(
-                        CARTS_TABLE.c.conversation_id == conversation_id
+    await ensure_storage_ready(settings)
+    with observed_span("sql", "sql.delete_session"):
+        async with engine.begin() as conn:
+            cart_ids = [
+                row.id
+                for row in (
+                    await conn.execute(
+                        select(CARTS_TABLE.c.id).where(
+                            CARTS_TABLE.c.conversation_id == conversation_id
+                        )
                     )
                 )
-            )
-        ]
-        order_ids = [
-            row.id
-            for row in (
-                await conn.execute(
-                    select(ORDERS_TABLE.c.id).where(
-                        ORDERS_TABLE.c.conversation_id == conversation_id
+            ]
+            order_ids = [
+                row.id
+                for row in (
+                    await conn.execute(
+                        select(ORDERS_TABLE.c.id).where(
+                            ORDERS_TABLE.c.conversation_id == conversation_id
+                        )
                     )
                 )
-            )
-        ]
+            ]
 
-        if order_ids:
+            if order_ids:
+                await conn.execute(
+                    delete(ORDER_ITEMS_TABLE).where(
+                        ORDER_ITEMS_TABLE.c.order_id.in_(order_ids)
+                    )
+                )
             await conn.execute(
-                delete(ORDER_ITEMS_TABLE).where(
-                    ORDER_ITEMS_TABLE.c.order_id.in_(order_ids)
+                delete(ORDERS_TABLE).where(
+                    ORDERS_TABLE.c.conversation_id == conversation_id
                 )
             )
-        await conn.execute(
-            delete(ORDERS_TABLE).where(
-                ORDERS_TABLE.c.conversation_id == conversation_id
-            )
-        )
 
-        if cart_ids:
+            if cart_ids:
+                await conn.execute(
+                    delete(CART_ITEMS_TABLE).where(
+                        CART_ITEMS_TABLE.c.cart_id.in_(cart_ids)
+                    )
+                )
             await conn.execute(
-                delete(CART_ITEMS_TABLE).where(CART_ITEMS_TABLE.c.cart_id.in_(cart_ids))
+                delete(CARTS_TABLE).where(
+                    CARTS_TABLE.c.conversation_id == conversation_id
+                )
             )
-        await conn.execute(
-            delete(CARTS_TABLE).where(CARTS_TABLE.c.conversation_id == conversation_id)
-        )
 
-        await conn.execute(
-            delete(CONVERSATION_SUMMARIES_TABLE).where(
-                CONVERSATION_SUMMARIES_TABLE.c.conversation_id == conversation_id
+            await conn.execute(
+                delete(CONVERSATION_SUMMARIES_TABLE).where(
+                    CONVERSATION_SUMMARIES_TABLE.c.conversation_id == conversation_id
+                )
             )
-        )
-        await conn.execute(
-            delete(CONVERSATION_MESSAGES_TABLE).where(
-                CONVERSATION_MESSAGES_TABLE.c.conversation_id == conversation_id
+            await conn.execute(
+                delete(CONVERSATION_MESSAGES_TABLE).where(
+                    CONVERSATION_MESSAGES_TABLE.c.conversation_id == conversation_id
+                )
             )
-        )
-        await conn.execute(
-            delete(CONVERSATIONS_TABLE).where(CONVERSATIONS_TABLE.c.id == conversation_id)
-        )
+            await conn.execute(
+                delete(CONVERSATIONS_TABLE).where(
+                    CONVERSATIONS_TABLE.c.id == conversation_id
+                )
+            )
+    _ENSURED_CONVERSATIONS.discard((user_id, conversation_id))
 
 
 async def save_order_snapshot(
@@ -1351,54 +1471,58 @@ async def save_order_snapshot(
     memory = load_memory(order.session_id, user_id=user_id, settings=settings)
     await memory._create_table()
 
-    async with memory._lock:
-        async with memory.engine.begin() as conn:
-            exists = await conn.scalar(
-                select(ORDERS_TABLE.c.id).where(ORDERS_TABLE.c.id == order.order_id)
-            )
-            values = {
-                "conversation_id": memory.conversation_id,
-                "user_id": user_id,
-                "session_id": order.session_id,
-                "status": order.status,
-                "total_inr": order.total_inr,
-                "metadata": {"model_created_at": order.created_at.isoformat()},
-            }
-            if exists:
-                await conn.execute(
-                    update(ORDERS_TABLE)
-                    .where(ORDERS_TABLE.c.id == order.order_id)
-                    .values(**values, updated_at=func.now())
-                )
-            else:
-                await conn.execute(
-                    insert(ORDERS_TABLE).values(id=order.order_id, **values)
-                )
-
-            await conn.execute(
-                delete(ORDER_ITEMS_TABLE).where(
-                    ORDER_ITEMS_TABLE.c.order_id == order.order_id
-                )
-            )
-            for index, item in enumerate(order.items):
-                await conn.execute(
-                    insert(ORDER_ITEMS_TABLE).values(
-                        id=_line_id(
-                            order.order_id,
-                            index,
-                            item.item_id,
-                            item.customizations,
-                        ),
-                        order_id=order.order_id,
-                        item_id=item.item_id,
-                        name=item.name,
-                        unit_price_inr=item.unit_price_inr,
-                        quantity=item.quantity,
-                        customizations=item.customizations,
-                        line_total_inr=item.line_total_inr,
-                        metadata={},
+    with observed_span("sql", "sql.save_order_snapshot") as span:
+        async with memory._lock:
+            async with memory.engine.begin() as conn:
+                exists = await conn.scalar(
+                    select(ORDERS_TABLE.c.id).where(
+                        ORDERS_TABLE.c.id == order.order_id
                     )
                 )
+                values = {
+                    "conversation_id": memory.conversation_id,
+                    "user_id": user_id,
+                    "session_id": order.session_id,
+                    "status": order.status,
+                    "total_inr": order.total_inr,
+                    "metadata": {"model_created_at": order.created_at.isoformat()},
+                }
+                if exists:
+                    await conn.execute(
+                        update(ORDERS_TABLE)
+                        .where(ORDERS_TABLE.c.id == order.order_id)
+                        .values(**values, updated_at=func.now())
+                    )
+                else:
+                    await conn.execute(
+                        insert(ORDERS_TABLE).values(id=order.order_id, **values)
+                    )
+
+                await conn.execute(
+                    delete(ORDER_ITEMS_TABLE).where(
+                        ORDER_ITEMS_TABLE.c.order_id == order.order_id
+                    )
+                )
+                for index, item in enumerate(order.items):
+                    await conn.execute(
+                        insert(ORDER_ITEMS_TABLE).values(
+                            id=_line_id(
+                                order.order_id,
+                                index,
+                                item.item_id,
+                                item.customizations,
+                            ),
+                            order_id=order.order_id,
+                            item_id=item.item_id,
+                            name=item.name,
+                            unit_price_inr=item.unit_price_inr,
+                            quantity=item.quantity,
+                            customizations=item.customizations,
+                            line_total_inr=item.line_total_inr,
+                            metadata={},
+                        )
+                    )
+        span.update(item_count=len(order.items), total_inr=order.total_inr)
 
 
 async def get_summary(memory: MemoryBase) -> Msg | None:
@@ -1455,7 +1579,8 @@ async def compress_memory_after_turn(agent: ReActAgent) -> bool:
     try:
         compression_config.trigger_threshold = 0
         compression_config.keep_recent = keep_recent
-        await agent._compress_memory_if_needed()
+        with observed_span("memory_compression", "memory.compression"):
+            await agent._compress_memory_if_needed()
     finally:
         compression_config.trigger_threshold = original_threshold
         compression_config.keep_recent = original_keep_recent

@@ -9,6 +9,7 @@ class ChatRequest(BaseModel):
 
 
 class ChatResponse(BaseModel):
+    request_id: str
     user_id: str = "anonymous"
     session_id: str
     reply: str

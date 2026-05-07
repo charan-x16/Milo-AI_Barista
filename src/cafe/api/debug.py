@@ -75,13 +75,14 @@ def build_flow_state() -> dict:
             {"name": "FastAPI", "status": "online"},
             {"name": "SessionManager", "status": f"{len(session_ids)} active"},
             {"name": "StateStore", "status": f"{len(carts)} cart(s), {len(orders)} order(s)"},
-            {"name": "Orchestrator", "status": "per session"},
-            {"name": "Specialists", "status": "short lived"},
+            {"name": "FastRouter", "status": "hot path"},
+            {"name": "SingleLLMFormatter", "status": "fallback only"},
+            {"name": "AgentScope specialists", "status": "legacy/off hot path"},
             {
                 "name": "Memory",
                 "status": (
                     f"keep {settings.memory_keep_recent_messages} exact; "
-                    f"compress older or at {settings.memory_compression_trigger_tokens} tokens"
+                    "no inline compression"
                 ),
             },
         ],
@@ -367,7 +368,7 @@ DASHBOARD_HTML = """
     <header>
       <div>
         <h1>Milo Flow Monitor</h1>
-        <div class="subtitle">Orchestrator, tools, memory, state, and response trace in one live view.</div>
+        <div class="subtitle">Fast router, tools, memory, state, and response trace in one live view.</div>
       </div>
       <div class="pulse"><span class="dot"></span><span id="live-status">connecting</span></div>
     </header>

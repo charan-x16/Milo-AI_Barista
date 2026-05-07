@@ -1,7 +1,9 @@
 import pytest
+import pytest_asyncio
 
 from cafe.agents.memory import storage as memory_storage
 from cafe.config import get_settings
+from cafe.core.background_tasks import drain_background_tasks
 from cafe.core.state import get_store, reset_store
 
 
@@ -12,10 +14,16 @@ def isolated_memory_database(tmp_path, monkeypatch):
         f"sqlite+aiosqlite:///{(tmp_path / 'memory.sqlite3').as_posix()}",
     )
     get_settings.cache_clear()
-    memory_storage._ENGINE = None
+    memory_storage._reset_storage_runtime_cache()
     yield
     get_settings.cache_clear()
-    memory_storage._ENGINE = None
+    memory_storage._reset_storage_runtime_cache()
+
+
+@pytest_asyncio.fixture(autouse=True)
+async def drain_background_work():
+    yield
+    await drain_background_tasks(timeout=2.0)
 
 
 @pytest.fixture

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from functools import lru_cache
 from pathlib import Path
 from typing import Protocol
 from uuid import NAMESPACE_URL, uuid5
@@ -9,6 +10,7 @@ from qdrant_client import QdrantClient
 from qdrant_client.models import Distance, PointStruct, VectorParams
 
 from cafe.config import Settings, get_settings
+from cafe.core.observability import observed_span
 
 
 DOCS_DIR = Path(__file__).resolve().parents[1] / "Docs"
@@ -163,26 +165,32 @@ class RagService:
         return len(points)
 
     def retrieve(self, collection_name: str, query: str, *, limit: int = 5) -> list[RagHit]:
-        query_vector = self._embed([query])[0]
-        results = self._client.query_points(
-            collection_name=collection_name,
-            query=query_vector,
-            limit=limit,
-            with_payload=True,
-        ).points
+        with observed_span(
+            "qdrant",
+            "qdrant.retrieve",
+            {"collection": collection_name, "limit": limit},
+        ) as span:
+            query_vector = self._embed([query])[0]
+            results = self._client.query_points(
+                collection_name=collection_name,
+                query=query_vector,
+                limit=limit,
+                with_payload=True,
+            ).points
 
-        hits: list[RagHit] = []
-        for point in results:
-            payload = point.payload or {}
-            hits.append(
-                RagHit(
-                    text=str(payload.get("text", "")),
-                    score=float(point.score),
-                    source=str(payload.get("source", "")),
-                    chunk_index=int(payload.get("chunk_index", 0)),
+            hits: list[RagHit] = []
+            for point in results:
+                payload = point.payload or {}
+                hits.append(
+                    RagHit(
+                        text=str(payload.get("text", "")),
+                        score=float(point.score),
+                        source=str(payload.get("source", "")),
+                        chunk_index=int(payload.get("chunk_index", 0)),
+                    )
                 )
-            )
-        return hits
+            span.update(result_count=len(hits))
+            return hits
 
     def _embed(self, texts: list[str]) -> list[list[float]]:
         if self._embedder is None:
@@ -190,11 +198,42 @@ class RagService:
         return self._embedder.embed(texts)
 
 
-def build_rag_service(settings: Settings | None = None) -> RagService:
+@lru_cache(maxsize=8)
+def _cached_rag_service(
+    qdrant_url: str,
+    qdrant_api_key: str,
+    embedding_model: str,
+    embedding_dimensions: int,
+) -> RagService:
+    client = QdrantClient(url=qdrant_url, api_key=qdrant_api_key or None)
+    embedder = FastEmbedder(model=embedding_model, dimension=embedding_dimensions)
+    return RagService(client=client, embedder=embedder)
+
+
+def build_rag_service(
+    settings: Settings | None = None,
+    *,
+    cached: bool = True,
+) -> RagService:
     s = settings or get_settings()
+    if cached:
+        return _cached_rag_service(
+            s.qdrant_url,
+            s.qdrant_api_key,
+            s.embedding_model,
+            s.embedding_dimensions,
+        )
     client = QdrantClient(url=s.qdrant_url, api_key=s.qdrant_api_key or None)
     embedder = FastEmbedder(model=s.embedding_model, dimension=s.embedding_dimensions)
     return RagService(client=client, embedder=embedder)
+
+
+def warm_rag_service(settings: Settings | None = None) -> RagService:
+    return build_rag_service(settings=settings, cached=True)
+
+
+def clear_rag_service_cache() -> None:
+    _cached_rag_service.cache_clear()
 
 
 def create_qdrant_collections(*, recreate: bool = False, settings: Settings | None = None) -> dict[str, bool]:
