@@ -1,10 +1,11 @@
-"""FastAPI surface for Milo Barista. Thin - all logic is in core/."""
+"""FastAPI surface for Milo Barista."""
 
 import logging
 import time
 import uuid
 from contextlib import asynccontextmanager
 
+from agentscope.message import Msg
 from fastapi import FastAPI, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import RedirectResponse
@@ -13,16 +14,22 @@ from cafe import __version__
 from cafe.agents.llm import normalized_provider
 from cafe.agents.memory import (
     DEFAULT_USER_ID,
+    compress_memory_after_turn,
     delete_session_data,
     list_conversation_messages,
     list_user_conversations,
 )
 from cafe.agents.session_manager import get_session_manager
-from cafe.agents.specialist_tools import reset_specialists
+from cafe.agents.specialist_tools import (
+    reset_current_session_id,
+    reset_current_user_request,
+    reset_specialists,
+    set_current_session_id,
+    set_current_user_request,
+)
 from cafe.api.debug import router as debug_router
 from cafe.api.schemas import ChatRequest, ChatResponse
 from cafe.config import get_settings
-from cafe.core.turn_runtime import run_turn
 from cafe.core.debug_trace import get_debug_trace_store
 from cafe.core.state import get_store, reset_store
 
@@ -80,13 +87,116 @@ async def new_session():
 
 @app.post("/chat", response_model=ChatResponse)
 async def chat(req: ChatRequest):
-    out = await run_turn(
+    trace = get_debug_trace_store()
+    turn_id = trace.start_turn(req.session_id, req.message)
+    trace.add_event(turn_id, "api", "running", "Chat request accepted")
+
+    orchestrator = get_session_manager().get_or_create(
         req.session_id,
-        req.message,
-        req.enable_critic,
         user_id=req.user_id,
     )
-    return ChatResponse(user_id=req.user_id, session_id=req.session_id, **out)
+    trace.add_event(
+        turn_id,
+        "session_manager",
+        "complete",
+        "Loaded SQL-backed per-session Orchestrator",
+        {
+            "agent_name": getattr(orchestrator, "name", "Orchestrator"),
+            "user_id": req.user_id,
+        },
+    )
+
+    msg = Msg(
+        name="user",
+        content=f"[session_id={req.session_id}] {req.message}",
+        role="user",
+        metadata={"display_text": req.message},
+    )
+
+    user_request_token = set_current_user_request(req.message)
+    session_token = set_current_session_id(req.session_id)
+    try:
+        trace.add_event(turn_id, "orchestrator", "running", "Routing request")
+        reply_msg = await orchestrator(msg)
+    except Exception as e:
+        log.exception("orchestrator failed")
+        reply = f"Sorry, something went wrong: {e}"
+        trace.add_event(
+            turn_id,
+            "orchestrator",
+            "error",
+            "Orchestrator raised an exception",
+            {"error": str(e)},
+        )
+        trace.finish_turn(turn_id, "error", reply, [], None)
+        return ChatResponse(
+            user_id=req.user_id,
+            session_id=req.session_id,
+            reply=reply,
+            tool_calls=[],
+            critique=None,
+        )
+    finally:
+        reset_current_user_request(user_request_token)
+        reset_current_session_id(session_token)
+
+    reply = _extract_reply_text(reply_msg)
+    trace.add_event(turn_id, "orchestrator", "complete", "Routing complete")
+
+    if req.enable_critic:
+        trace.add_event(
+            turn_id,
+            "critic",
+            "skipped",
+            "Critic is not wired in the simplified chat handoff",
+        )
+
+    try:
+        compressed = await compress_memory_after_turn(orchestrator)
+    except Exception as e:
+        log.warning("post-turn memory compression skipped: %s", e)
+        trace.add_event(
+            turn_id,
+            "memory",
+            "warning",
+            "Post-turn memory compression skipped",
+            {"error": str(e)},
+        )
+    else:
+        trace.add_event(
+            turn_id,
+            "memory",
+            "complete" if compressed else "skipped",
+            (
+                "Compressed older messages after turn"
+                if compressed
+                else "Recent memory window has not overflowed"
+            ),
+        )
+
+    trace.add_event(turn_id, "response", "complete", "Final response assembled")
+    trace.finish_turn(turn_id, "complete", reply, [], None)
+    return ChatResponse(
+        user_id=req.user_id,
+        session_id=req.session_id,
+        reply=reply,
+        tool_calls=[],
+        critique=None,
+    )
+
+
+def _extract_reply_text(msg) -> str:
+    content = getattr(msg, "content", "") or ""
+    if isinstance(content, str):
+        return content
+
+    parts = []
+    for block in content:
+        if isinstance(block, dict) and block.get("type") == "text":
+            parts.append(block.get("text", ""))
+        elif getattr(block, "type", None) == "text":
+            parts.append(getattr(block, "text", ""))
+    return "".join(parts) or str(msg)
 
 
 @app.get("/sessions/{session_id}/cart")

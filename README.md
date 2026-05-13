@@ -23,10 +23,6 @@ FastAPI API
 src/cafe/api/main.py
     |
     v
-Turn runtime
-src/cafe/core/turn_runtime.py
-    |
-    v
 Per-session Orchestrator
 src/cafe/agents/orchestrator.py
 src/cafe/agents/session_manager.py
@@ -210,15 +206,15 @@ EMBEDDING_MODEL=BAAI/bge-small-en-v1.5
 EMBEDDING_DIMENSIONS=384
 ```
 
-## The 7-Step Flow
+## Current Chat Flow
 
-1. `task_classification`: the Orchestrator's first ReAct thought, guided by `src/cafe/agents/agent_md/orchestrator.md`.
-2. `context_retrieval`: `_build_context()` in `src/cafe/core/turn_runtime.py` adds session id, cart snapshot, and recent orders.
-3. `planning`: handled inside the Orchestrator ReAct loop in `src/cafe/agents/orchestrator.py`.
-4. `execution loop`: `run_turn()` awaits the Orchestrator in `src/cafe/core/turn_runtime.py`.
-5. `tool_calls`: Orchestrator delegates to specialist tools in `src/cafe/agents/specialist_tools.py`; specialists call grouped domain tools in `src/cafe/tools/`.
-6. `validation`: services raise `ValidationError`, tools wrap failures in `ToolResult.fail`; Phase 2 critic hook is marked in `src/cafe/core/turn_runtime.py`.
-7. `state_update + output`: services update `StateStore`, SQL memory persists messages/cart/orders, and `run_turn()` assembles reply, tool calls, and optional critique payload.
+1. `POST /chat` validates the request in `src/cafe/api/main.py`.
+2. The API loads the SQL-backed per-session Orchestrator through `SessionManager`.
+3. The API sends the user message to the Orchestrator with the active `session_id`.
+4. The Orchestrator delegates menu, cart, order, or support work to specialist tools in `src/cafe/agents/specialist_tools.py`.
+5. Specialists call grouped domain tools in `src/cafe/tools/`.
+6. Services update `StateStore`; SQL memory persists messages, cart snapshots, and order snapshots.
+7. The API returns the Orchestrator's final reply.
 
 ## Folder Layout
 
@@ -245,7 +241,6 @@ backend/
 |     |- core/
 |     |  |- debug_trace.py
 |     |  |- state.py
-|     |  |- turn_runtime.py
 |     |  `- validator.py
 |     |- models/
 |     |- services/
@@ -277,10 +272,8 @@ The full suite needs `LLM_API_KEY` for `tests/test_api.py::test_chat_end_to_end`
 
 ## Phase 2 (TODO)
 
-Add an LLM critic at the validation step in `src/cafe/core/turn_runtime.py`.
-
-The hook is already wired through `enable_critic`; it currently returns a
-placeholder PASS only when a mutating Orchestrator-level tool was used.
+Redesign the chat flow and reintroduce validation/critic behavior behind a
+clearer component boundary.
 
 ## Not In This Prototype
 
