@@ -24,19 +24,7 @@ FLOW_STEPS = [
         "id": "api",
         "label": "FastAPI /chat",
         "kind": "http",
-        "next": ["turn_runtime"],
-    },
-    {
-        "id": "turn_runtime",
-        "label": "turn_runtime",
-        "kind": "core",
-        "next": ["context", "session_manager"],
-    },
-    {
-        "id": "context",
-        "label": "Context Snapshot",
-        "kind": "state",
-        "next": ["orchestrator"],
+        "next": ["session_manager"],
     },
     {
         "id": "session_manager",

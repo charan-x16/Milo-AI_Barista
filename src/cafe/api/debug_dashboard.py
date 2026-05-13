@@ -445,20 +445,17 @@ DASHBOARD_HTML = """
 
     const descriptions = {
       client: "Browser, API client, or test sends a chat request.",
-      api: "FastAPI validates request and calls the turn runtime.",
-      turn_runtime: "Runs routing, specialist execution, tracing, and final validation.",
-      context: "Adds session id, cart snapshot, and recent orders.",
+      api: "FastAPI validates request and hands it to the Orchestrator.",
       session_manager: "Reuses the per-session Orchestrator.",
       orchestrator: "Routes the request to the owning specialist.",
       specialists: "Product, cart, order, or support agent returns the answer.",
       tools: "Typed functions that mutate or read domain state.",
       state_store: "In-memory carts, orders, and menu.",
-      critic: "Optional validation hook after mutating actions.",
+      critic: "Reserved validation hook for the redesigned flow.",
       response: "Final payload returned to the client."
     };
 
-    const mainFlow = ["client", "api", "turn_runtime", "orchestrator", "specialists", "tools", "state_store", "critic", "response"];
-    const branchFlow = ["context", "session_manager"];
+    const mainFlow = ["client", "api", "session_manager", "orchestrator", "specialists", "tools", "state_store", "critic", "response"];
 
     function escapeHtml(value) {
       return String(value ?? "").replace(/[&<>"']/g, char => ({
@@ -489,24 +486,10 @@ DASHBOARD_HTML = """
       flowEl.className = "diagram";
       flowEl.innerHTML = mainFlow.map((id, index) => {
         const nodeHtml = renderNode(id, nodeById, active, done);
-        const branchHtml = id === "turn_runtime" ? renderBranch(nodeById, active, done) : "";
-        const noteHtml = id === "state_store" ? `<div class="flow-note">State changes are read back by future turns through the context snapshot.</div>` : "";
+        const noteHtml = id === "state_store" ? `<div class="flow-note">State changes are read back by future turns through session state and memory.</div>` : "";
         const arrowHtml = index < mainFlow.length - 1 ? `<div class="flow-arrow">↓</div>` : "";
-        return `${nodeHtml}${branchHtml}${noteHtml}${arrowHtml}`;
+        return `${nodeHtml}${noteHtml}${arrowHtml}`;
       }).join("");
-    }
-
-    function renderBranch(nodeById, active, done) {
-      return `
-        <div class="flow-arrow">↓</div>
-        <div class="flow-branch">
-          ${branchFlow.map(id => `
-            <div class="flow-branch-item">
-              ${renderNode(id, nodeById, active, done)}
-            </div>
-          `).join("")}
-        </div>
-      `;
     }
 
     function renderNode(id, nodeById, active, done) {
@@ -546,8 +529,8 @@ DASHBOARD_HTML = """
         ["model", state.runtime.model],
         ["active sessions", state.runtime.active_sessions.length],
         ["prompt cap", state.runtime.memory_max_prompt_tokens],
-        ["compression", state.runtime.memory_compression_trigger_tokens],
-        ["exact recent", state.runtime.memory_keep_recent_messages]
+        ["recent messages", state.runtime.memory_recent_messages],
+        ["summary interval", state.runtime.memory_summary_interval_messages]
       ].map(([key, value]) => `<div class="row"><span>${key}</span><strong>${escapeHtml(value)}</strong></div>`).join("");
 
       document.getElementById("components").innerHTML = state.components

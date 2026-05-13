@@ -8,7 +8,6 @@ from cafe.agents.memory import (
     DEFAULT_USER_ID,
     load_memory,
     make_chat_formatter,
-    make_compression_config,
 )
 from cafe.agents.prompts import ORCHESTRATOR_PROMPT
 from cafe.agents.specialist_tools import (
@@ -42,5 +41,4 @@ def make_orchestrator(
         toolkit=_make_toolkit(),
         memory=load_memory(session_id=session_id, user_id=user_id, settings=s),
         max_iters=10,
-        compression_config=make_compression_config(s),
     )
