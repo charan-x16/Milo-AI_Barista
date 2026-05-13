@@ -1,1 +1,1 @@
-
+"""Cafe tools module."""

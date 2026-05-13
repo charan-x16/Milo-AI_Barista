@@ -213,7 +213,7 @@ EMBEDDING_DIMENSIONS=384
 ## The 7-Step Flow
 
 1. `task_classification`: the Orchestrator's first ReAct thought, guided by `src/cafe/agents/agent_md/orchestrator.md`.
-2. `context_retrieval`: `_build_context()` in `src/cafe/core/turn_runtime.py` adds session id, cart snapshot, and recent orders.
+2. `context_retrieval`: `src/cafe/core/session_context.py` builds the session id, cart snapshot, preferences, last menu scope, and recent-order context.
 3. `planning`: handled inside the Orchestrator ReAct loop in `src/cafe/agents/orchestrator.py`.
 4. `execution loop`: `run_turn()` awaits the Orchestrator in `src/cafe/core/turn_runtime.py`.
 5. `tool_calls`: Orchestrator delegates to specialist tools in `src/cafe/agents/specialist_tools.py`; specialists call grouped domain tools in `src/cafe/tools/`.

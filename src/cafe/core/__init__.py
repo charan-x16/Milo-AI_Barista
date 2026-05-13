@@ -1,1 +1,1 @@
-
+"""Cafe core module."""

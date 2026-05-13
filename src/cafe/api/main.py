@@ -5,7 +5,7 @@ import time
 import uuid
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, Query, Request
+from fastapi import BackgroundTasks, FastAPI, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import RedirectResponse
 
@@ -17,29 +17,45 @@ from cafe.agents.memory import (
     list_conversation_messages,
     list_user_conversations,
 )
+from cafe.agents.memory.summary_cache import clear_summary_cache
 from cafe.agents.session_manager import get_session_manager
 from cafe.agents.specialist_tools import reset_specialists
 from cafe.api.debug import router as debug_router
 from cafe.api.schemas import ChatRequest, ChatResponse
 from cafe.config import get_settings
+from cafe.core.background_jobs import run_memory_compression_job
 from cafe.core.background_tasks import drain_background_tasks, session_task_key
 from cafe.core.debug_trace import get_debug_trace_store
-from cafe.core.startup import initialize_persistent_storage, initialize_runtime_resources
+from cafe.core.startup import (
+    initialize_persistent_storage,
+    initialize_runtime_resources,
+)
 from cafe.core.state import get_store, reset_store
 from cafe.core.turn_runtime import run_turn
-
 
 log = logging.getLogger("cafe")
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    """Handle lifespan.
+
+    Args:
+        - app: FastAPI - The app value.
+
+    Returns:
+        - return None - The return value.
+    """
     s = get_settings()
     logging.basicConfig(level=s.log_level)
     get_store()
     initialize_runtime_resources(s)
     await initialize_persistent_storage(s)
-    log.info("Milo Barista ready (provider=%s model=%s)", normalized_provider(s), s.openai_model)
+    log.info(
+        "Milo Barista ready (provider=%s model=%s)",
+        normalized_provider(s),
+        s.openai_model,
+    )
     yield
     await drain_background_tasks(timeout=10.0)
 
@@ -56,11 +72,25 @@ app.include_router(debug_router)
 
 @app.get("/", include_in_schema=False)
 async def root():
+    """Handle root.
+
+    Returns:
+        - return Any - The return value.
+    """
     return RedirectResponse(url="/debug/flow")
 
 
 @app.middleware("http")
 async def log_requests(request: Request, call_next):
+    """Handle log requests.
+
+    Args:
+        - request: Request - The request value.
+        - call_next: Any - The call next value.
+
+    Returns:
+        - return Any - The return value.
+    """
     t0 = time.perf_counter()
     resp = await call_next(request)
     log.info(
@@ -75,27 +105,60 @@ async def log_requests(request: Request, call_next):
 
 @app.get("/health")
 async def health():
+    """Handle health.
+
+    Returns:
+        - return Any - The return value.
+    """
     return {"status": "ok", "version": __version__}
 
 
 @app.post("/sessions")
 async def new_session():
+    """Handle new session.
+
+    Returns:
+        - return Any - The return value.
+    """
     return {"session_id": uuid.uuid4().hex}
 
 
 @app.post("/chat", response_model=ChatResponse)
-async def chat(req: ChatRequest):
+async def chat(req: ChatRequest, background_tasks: BackgroundTasks):
+    """Handle chat.
+
+    Args:
+        - req: ChatRequest - The req value.
+        - background_tasks: BackgroundTasks - FastAPI background task manager.
+
+    Returns:
+        - return Any - The return value.
+    """
     out = await run_turn(
         req.session_id,
         req.message,
         req.enable_critic,
         user_id=req.user_id,
     )
+    if out.pop("needs_compression", False):
+        background_tasks.add_task(
+            run_memory_compression_job,
+            user_id=req.user_id,
+            session_id=req.session_id,
+        )
     return ChatResponse(user_id=req.user_id, session_id=req.session_id, **out)
 
 
 @app.get("/sessions/{session_id}/cart")
 async def get_cart(session_id: str):
+    """Return the cart.
+
+    Args:
+        - session_id: str - The session id value.
+
+    Returns:
+        - return Any - The return value.
+    """
     cart = get_store().get_cart(session_id)
     return {
         "session_id": session_id,
@@ -106,6 +169,14 @@ async def get_cart(session_id: str):
 
 @app.get("/sessions/{session_id}/orders")
 async def get_orders(session_id: str):
+    """Return the orders.
+
+    Args:
+        - session_id: str - The session id value.
+
+    Returns:
+        - return Any - The return value.
+    """
     orders = [
         order.model_dump(mode="json")
         for order in get_store().orders.values()
@@ -119,7 +190,15 @@ async def get_conversations(
     user_id: str,
     limit: int = Query(default=20, ge=1, le=100),
 ):
-    """Frontend sidebar: recent conversations for a user."""
+    """Frontend sidebar: recent conversations for a user.
+
+    Args:
+        - user_id: str - The user id value.
+        - limit: int - The limit value.
+
+    Returns:
+        - return Any - The return value.
+    """
     await drain_background_tasks(timeout=2.0)
     return {
         "user_id": user_id,
@@ -133,7 +212,16 @@ async def get_messages(
     user_id: str = DEFAULT_USER_ID,
     limit: int = Query(default=200, ge=1, le=500),
 ):
-    """Frontend chat history: visible user/assistant messages for a session."""
+    """Frontend chat history: visible user/assistant messages for a session.
+
+    Args:
+        - session_id: str - The session id value.
+        - user_id: str - The user id value.
+        - limit: int - The limit value.
+
+    Returns:
+        - return Any - The return value.
+    """
     await drain_background_tasks(
         key=session_task_key(user_id, session_id),
         timeout=2.0,
@@ -151,7 +239,15 @@ async def get_messages(
 
 @app.post("/sessions/{session_id}/reset")
 async def reset_session(session_id: str, user_id: str = DEFAULT_USER_ID):
-    """Dev helper - clears one session from SQL memory and in-process state."""
+    """Dev helper - clears one session from SQL memory and in-process state.
+
+    Args:
+        - session_id: str - The session id value.
+        - user_id: str - The user id value.
+
+    Returns:
+        - return Any - The return value.
+    """
     await drain_background_tasks(
         key=session_task_key(user_id, session_id),
         timeout=5.0,
@@ -169,16 +265,26 @@ async def reset_session(session_id: str, user_id: str = DEFAULT_USER_ID):
 
 @app.get("/menu")
 async def get_menu():
+    """Return the menu.
+
+    Returns:
+        - return Any - The return value.
+    """
     return {"items": [item.model_dump() for item in get_store().menu.values()]}
 
 
 @app.post("/admin/reset")
 async def admin_reset():
-    """Dev only - clears carts and orders, resets specialist agents."""
+    """Dev only - clears carts and orders, resets specialist agents.
+
+    Returns:
+        - return Any - The return value.
+    """
     await drain_background_tasks(timeout=5.0)
     reset_store()
     get_store()
     reset_specialists()
     get_session_manager().reset()
+    await clear_summary_cache()
     get_debug_trace_store().reset()
     return {"status": "reset"}

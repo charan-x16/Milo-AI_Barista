@@ -9,7 +9,6 @@ from threading import Lock
 from time import perf_counter
 from typing import Any
 
-
 MAX_TURNS = 40
 
 
@@ -30,37 +29,49 @@ FLOW_STEPS = [
         "id": "turn_runtime",
         "label": "turn_runtime",
         "kind": "core",
-        "next": ["context", "fast_router"],
+        "next": ["router"],
+    },
+    {
+        "id": "router",
+        "label": "Intent Router",
+        "kind": "core",
+        "next": ["context", "session_manager", "response"],
     },
     {
         "id": "context",
         "label": "Context Snapshot",
         "kind": "state",
-        "next": ["fast_router"],
+        "next": ["orchestrator"],
     },
     {
-        "id": "fast_router",
-        "label": "Fast Router",
-        "kind": "router",
-        "next": ["tools", "single_llm"],
+        "id": "session_manager",
+        "label": "Session Manager",
+        "kind": "memory",
+        "next": ["orchestrator"],
     },
     {
-        "id": "single_llm",
-        "label": "Single LLM Formatter",
-        "kind": "llm",
-        "next": ["critic"],
+        "id": "orchestrator",
+        "label": "Orchestrator",
+        "kind": "agent",
+        "next": ["specialists", "critic"],
+    },
+    {
+        "id": "specialists",
+        "label": "Specialists",
+        "kind": "agent",
+        "next": ["tools"],
     },
     {
         "id": "tools",
-        "label": "Domain Handlers",
+        "label": "Domain Tools",
         "kind": "tool",
-        "next": ["state_store", "response"],
+        "next": ["state_store"],
     },
     {
         "id": "state_store",
         "label": "StateStore",
         "kind": "state",
-        "next": ["response"],
+        "next": ["orchestrator"],
     },
     {
         "id": "critic",

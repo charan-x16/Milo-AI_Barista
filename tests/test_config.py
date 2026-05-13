@@ -1,8 +1,18 @@
+"""Tests test config module."""
+
 from cafe.agents.memory import _normalize_async_database_url
 from cafe.config import Settings
 
 
 def test_settings_accept_openai_env_names(monkeypatch):
+    """Verify settings accept openai env names.
+
+    Args:
+        - monkeypatch: Any - The monkeypatch value.
+
+    Returns:
+        - return None - The return value.
+    """
     monkeypatch.setenv("OPENAI_API_KEY", "openai-key")
     monkeypatch.setenv("OPENAI_MODEL", "gpt-4o-mini")
     monkeypatch.delenv("LLM_API_KEY", raising=False)
@@ -15,6 +25,14 @@ def test_settings_accept_openai_env_names(monkeypatch):
 
 
 def test_settings_accept_llm_env_names(monkeypatch):
+    """Verify settings accept llm env names.
+
+    Args:
+        - monkeypatch: Any - The monkeypatch value.
+
+    Returns:
+        - return None - The return value.
+    """
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     monkeypatch.delenv("OPENAI_MODEL", raising=False)
     monkeypatch.setenv("LLM_API_KEY", "llm-key")
@@ -30,6 +48,14 @@ def test_settings_accept_llm_env_names(monkeypatch):
 
 
 def test_settings_accept_provider_and_base_url(monkeypatch):
+    """Verify settings accept provider and base url.
+
+    Args:
+        - monkeypatch: Any - The monkeypatch value.
+
+    Returns:
+        - return None - The return value.
+    """
     monkeypatch.setenv("LLM_PROVIDER", "openrouter")
     monkeypatch.setenv("LLM_BASE_URL", "https://example.test/v1")
 
@@ -40,6 +66,11 @@ def test_settings_accept_provider_and_base_url(monkeypatch):
 
 
 def test_neon_asyncpg_sslmode_url_is_normalized():
+    """Verify neon asyncpg sslmode url is normalized.
+
+    Returns:
+        - return None - The return value.
+    """
     url, kwargs = _normalize_async_database_url(
         "postgresql+asyncpg://user:pass@example.neon.tech/db?sslmode=require"
     )

@@ -2,12 +2,18 @@
 
 from pathlib import Path
 
-
 _DIR = Path(__file__).parent / "agent_md"
 
 
 def load(name: str) -> str:
-    """Load `agent_md/<name>.md` as a string."""
+    """Load `agent_md/<name>.md` as a string.
+
+    Args:
+        - name: str - The name value.
+
+    Returns:
+        - return str - The return value.
+    """
     return (_DIR / f"{name}.md").read_text(encoding="utf-8")
 
 

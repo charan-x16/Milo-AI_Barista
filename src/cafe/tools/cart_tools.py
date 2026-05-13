@@ -1,13 +1,15 @@
+"""Cafe tools cart tools module."""
+
 from agentscope.tool import ToolResponse
 
-from cafe.core.observability import observe_tool
-from cafe.core.state import get_store
-from cafe.core.validator import ValidationError
 from cafe.agents.memory import (
     clear_cart_snapshot,
     resolve_menu_item_for_cart,
     save_cart_snapshot,
 )
+from cafe.core.observability import observe_tool
+from cafe.core.state import get_store
+from cafe.core.validator import ValidationError
 from cafe.models.tool_io import ToolResult
 from cafe.services import cart_service
 from cafe.tools._wrap import wrap
@@ -23,16 +25,13 @@ async def add_to_cart(
     """Add a menu item to the cart.
 
     Args:
-        session_id: The chat session id (passed by the system).
-        item_id: Menu item id (e.g. 'm001'). Get it from search_products.
-        quantity: How many to add. Positive integer.
-        customizations: Optional list of free-text notes.
+        - session_id: str - The session id value.
+        - item_id: str - The item id value.
+        - quantity: int - The quantity value.
+        - customizations: list[str] | None - The customizations value.
 
     Returns:
-        ToolResult.ok(cart=...) or ToolResult.fail(error=...).
-
-    Example:
-        add_to_cart(session_id="s1", item_id="m001", quantity=2)
+        - return ToolResponse - The return value.
     """
     try:
         try:
@@ -55,7 +54,13 @@ async def add_to_cart(
                 customizations,
             )
         await save_cart_snapshot(session_id, cart)
-        return wrap(ToolResult.ok(cart=cart.model_dump(), item_count=len(cart.items), total_inr=cart.total_inr))
+        return wrap(
+            ToolResult.ok(
+                cart=cart.model_dump(),
+                item_count=len(cart.items),
+                total_inr=cart.total_inr,
+            )
+        )
     except ValidationError as e:
         return wrap(ToolResult.fail(str(e)))
     except Exception as e:
@@ -67,19 +72,22 @@ async def remove_from_cart(session_id: str, item_id: str) -> ToolResponse:
     """Remove all units of a menu item from the cart.
 
     Args:
-        session_id: The chat session id (passed by the system).
-        item_id: Menu item id to remove.
+        - session_id: str - The session id value.
+        - item_id: str - The item id value.
 
     Returns:
-        ToolResult.ok(cart=...) or ToolResult.fail(error=...).
-
-    Example:
-        remove_from_cart(session_id="s1", item_id="m001")
+        - return ToolResponse - The return value.
     """
     try:
         cart = cart_service.remove_item(get_store(), session_id, item_id)
         await save_cart_snapshot(session_id, cart)
-        return wrap(ToolResult.ok(cart=cart.model_dump(), item_count=len(cart.items), total_inr=cart.total_inr))
+        return wrap(
+            ToolResult.ok(
+                cart=cart.model_dump(),
+                item_count=len(cart.items),
+                total_inr=cart.total_inr,
+            )
+        )
     except ValidationError as e:
         return wrap(ToolResult.fail(str(e)))
     except Exception as e:
@@ -91,18 +99,21 @@ async def view_cart(session_id: str) -> ToolResponse:
     """View the current cart.
 
     Args:
-        session_id: The chat session id (passed by the system).
+        - session_id: str - The session id value.
 
     Returns:
-        ToolResult.ok(cart=...) or ToolResult.fail(error=...).
-
-    Example:
-        view_cart(session_id="s1")
+        - return ToolResponse - The return value.
     """
     try:
         cart = cart_service.view_cart(get_store(), session_id)
         await save_cart_snapshot(session_id, cart)
-        return wrap(ToolResult.ok(cart=cart.model_dump(), item_count=len(cart.items), total_inr=cart.total_inr))
+        return wrap(
+            ToolResult.ok(
+                cart=cart.model_dump(),
+                item_count=len(cart.items),
+                total_inr=cart.total_inr,
+            )
+        )
     except ValidationError as e:
         return wrap(ToolResult.fail(str(e)))
     except Exception as e:
@@ -114,13 +125,10 @@ async def clear_cart(session_id: str) -> ToolResponse:
     """Clear the current cart.
 
     Args:
-        session_id: The chat session id (passed by the system).
+        - session_id: str - The session id value.
 
     Returns:
-        ToolResult.ok(cleared=True) or ToolResult.fail(error=...).
-
-    Example:
-        clear_cart(session_id="s1")
+        - return ToolResponse - The return value.
     """
     try:
         cart_service.clear_cart(get_store(), session_id)

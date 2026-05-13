@@ -1,1 +1,1 @@
-
+"""Cafe api module."""

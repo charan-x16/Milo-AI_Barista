@@ -1,3 +1,5 @@
+"""Cafe tools support tools module."""
+
 from agentscope.tool import ToolResponse
 
 from cafe.core.observability import observe_tool
@@ -13,13 +15,10 @@ async def faq_lookup(question: str) -> ToolResponse:
     """Returns (topic, answer) wrapped in ToolResult.
 
     Args:
-        question: Customer support question to match against cafe FAQs.
+        - question: str - The question value.
 
     Returns:
-        ToolResult.ok(topic=..., answer=...) or ToolResult.fail(error=...).
-
-    Example:
-        faq_lookup(question="What time do you open?")
+        - return ToolResponse - The return value.
     """
     try:
         topic, answer = faq_service.lookup_faq(question)
@@ -35,18 +34,17 @@ async def search_support_knowledge(query: str, max_results: int = 5) -> ToolResp
     """Retrieve policy/support knowledge from the support Qdrant collection.
 
     Args:
-        query: Natural-language customer support question.
-        max_results: Maximum number of chunks to return.
+        - query: str - The query value.
+        - max_results: int - The max results value.
 
     Returns:
-        ToolResult.ok(results=..., count=...) or ToolResult.fail(error=...).
-
-    Example:
-        search_support_knowledge(query="refund policy for wrong item", max_results=3)
+        - return ToolResponse - The return value.
     """
     try:
         source = rag_sources()["support"]
-        hits = build_rag_service().retrieve(source.collection_name, query, limit=max_results)
+        hits = build_rag_service().retrieve(
+            source.collection_name, query, limit=max_results
+        )
         return wrap(
             ToolResult.ok(
                 results=[

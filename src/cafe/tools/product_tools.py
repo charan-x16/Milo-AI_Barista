@@ -1,3 +1,5 @@
+"""Cafe tools product tools module."""
+
 import asyncio
 from contextvars import ContextVar
 
@@ -9,15 +11,16 @@ from cafe.core.validator import ValidationError
 from cafe.models.tool_io import ToolResult
 from cafe.services import menu_service
 from cafe.services.menu_index_service import (
+    browse_menu_query,
+    build_menu_item_match_index,
     extract_price_limit,
     filter_price_items,
-    format_price_list_query,
-    format_price_filter_query,
-    browse_menu_query,
     format_menu_categories,
     format_menu_item_matches,
     format_menu_recommendations,
     format_menu_section_items,
+    format_price_filter_query,
+    format_price_list_query,
     get_menu_categories,
     is_context_dependent_price_request,
     is_price_list_request,
@@ -28,7 +31,6 @@ from cafe.services.menu_index_service import (
 )
 from cafe.services.rag_service import RagHit, build_rag_service, rag_sources
 from cafe.tools._wrap import wrap
-
 
 _CURRENT_PRODUCT_QUERY: ContextVar[str | None] = ContextVar(
     "current_product_query",
@@ -41,22 +43,62 @@ _CURRENT_SESSION_ID: ContextVar[str | None] = ContextVar(
 
 
 def set_current_product_query(query: str):
+    """Set the current product query.
+
+    Args:
+        - query: str - The query value.
+
+    Returns:
+        - return Any - The return value.
+    """
     return _CURRENT_PRODUCT_QUERY.set(query)
 
 
 def reset_current_product_query(token) -> None:
+    """Reset the current product query.
+
+    Args:
+        - token: Any - The token value.
+
+    Returns:
+        - return None - The return value.
+    """
     _CURRENT_PRODUCT_QUERY.reset(token)
 
 
 def set_current_product_session_id(session_id: str | None):
+    """Set the current product session id.
+
+    Args:
+        - session_id: str | None - The session id value.
+
+    Returns:
+        - return Any - The return value.
+    """
     return _CURRENT_SESSION_ID.set(session_id)
 
 
 def reset_current_product_session_id(token) -> None:
+    """Reset the current product session id.
+
+    Args:
+        - token: Any - The token value.
+
+    Returns:
+        - return None - The return value.
+    """
     _CURRENT_SESSION_ID.reset(token)
 
 
 def _remember_menu_scope(query: str) -> None:
+    """Handle remember menu scope.
+
+    Args:
+        - query: str - The query value.
+
+    Returns:
+        - return None - The return value.
+    """
     session_id = _CURRENT_SESSION_ID.get()
     if not session_id:
         return
@@ -66,6 +108,14 @@ def _remember_menu_scope(query: str) -> None:
 
 
 def _query_with_last_scope(query: str) -> str:
+    """Handle query with last scope.
+
+    Args:
+        - query: str - The query value.
+
+    Returns:
+        - return str - The return value.
+    """
     session_id = _CURRENT_SESSION_ID.get()
     if (
         session_id
@@ -76,7 +126,208 @@ def _query_with_last_scope(query: str) -> str:
     return query
 
 
+def _active_product_preferences(query: str) -> set[str]:
+    """Return active dietary preferences for the current product request.
+
+    Args:
+        - query: str - The current product query.
+
+    Returns:
+        - return set[str] - Active preference labels.
+    """
+    preferences: set[str] = set()
+    session_id = _CURRENT_SESSION_ID.get()
+    if session_id:
+        preferences.update(get_store().session_preferences.get(session_id, set()))
+
+    normalized = query.casefold()
+    checks = {
+        "vegan": ("vegan", "plant based"),
+        "vegetarian": ("vegetarian", "veg ", "pure veg"),
+        "no chicken": ("no chicken", "without chicken"),
+        "no meat": ("no meat", "without meat"),
+        "diabetic": ("diabetic", "low sugar", "no sugar", "sugar free"),
+    }
+    padded = f" {normalized} "
+    for label, terms in checks.items():
+        if any(term in padded for term in terms):
+            preferences.add(label)
+    return preferences
+
+
+def _dietary_text(item) -> str:
+    """Return normalized dietary text for a menu item match.
+
+    Args:
+        - item: Any - The menu item match.
+
+    Returns:
+        - return str - Normalized dietary text.
+    """
+    parts = [item.dietary_tags or "", " ".join(item.tags or ())]
+    return " ".join(parts).casefold()
+
+
+def _item_matches_preferences(item, preferences: set[str]) -> bool:
+    """Return whether an item satisfies active preferences.
+
+    Args:
+        - item: Any - The menu item match.
+        - preferences: set[str] - Active preference labels.
+
+    Returns:
+        - return bool - Whether the item satisfies the preferences.
+    """
+    dietary = _dietary_text(item)
+    if "vegan" in preferences:
+        return "vegan" in dietary
+    if preferences & {"vegetarian", "no chicken", "no meat"}:
+        return "non-vegetarian" not in dietary and "chicken" not in dietary
+    return True
+
+
+def _closest_preference_alternatives(items: tuple, preferences: set[str]) -> tuple:
+    """Return safe nearby alternatives when strict matches are unavailable.
+
+    Args:
+        - items: tuple - Scoped menu items.
+        - preferences: set[str] - Active preference labels.
+
+    Returns:
+        - return tuple - Nearby alternatives.
+    """
+    if "vegan" in preferences:
+        return tuple(
+            item
+            for item in items
+            if "non-vegetarian" not in _dietary_text(item)
+            and "chicken" not in _dietary_text(item)
+        )
+    return tuple()
+
+
+def _format_preference_item_line(item) -> str:
+    """Format one preference-scoped item line.
+
+    Args:
+        - item: Any - The menu item match.
+
+    Returns:
+        - return str - The formatted item line.
+    """
+    details = []
+    if item.price:
+        details.append(f"INR {item.price}")
+    if item.dietary_tags:
+        details.append(item.dietary_tags)
+    suffix = f" ({'; '.join(details)})" if details else ""
+    return f"- {item.name}{suffix}"
+
+
+def _preference_heading(preferences: set[str], section: str | None) -> str:
+    """Return the heading for a preference-scoped browse response.
+
+    Args:
+        - preferences: set[str] - Active preference labels.
+        - section: str | None - Requested menu section.
+
+    Returns:
+        - return str - Customer-facing heading.
+    """
+    label = "vegan" if "vegan" in preferences else "preference-friendly"
+    target = f" under {section}" if section else ""
+    return f"Here are the {label} options{target}:"
+
+
+def _format_preference_scoped_browse(query: str, preferences: set[str]) -> dict | None:
+    """Return a preference-aware menu browse payload when needed.
+
+    Args:
+        - query: str - The current product query.
+        - preferences: set[str] - Active preference labels.
+
+    Returns:
+        - return dict | None - Tool payload override, if applicable.
+    """
+    if not preferences:
+        return None
+
+    supported = {"vegan", "vegetarian", "no chicken", "no meat"}
+    if not (preferences & supported):
+        return None
+
+    section = requested_section_from_query(query)
+    items = tuple(build_menu_item_match_index())
+    if section:
+        scoped_items = tuple(
+            item for item in items if item.section.casefold() == section.casefold()
+        )
+    else:
+        scoped_items = items
+
+    if not scoped_items:
+        return None
+
+    matches = tuple(
+        item for item in scoped_items if _item_matches_preferences(item, preferences)
+    )
+    if matches:
+        lines = [_preference_heading(preferences, section)]
+        lines.extend(_format_preference_item_line(item) for item in matches)
+        return {
+            "display_text": "\n".join(lines),
+            "items": [item.as_dict() for item in matches],
+            "count": len(matches),
+            "response_kind": "preference_scoped_browse",
+            "passthrough": True,
+            "preferences": sorted(preferences),
+        }
+
+    alternatives = _closest_preference_alternatives(scoped_items, preferences)
+    if "vegan" in preferences and alternatives:
+        target = f"items under {section}" if section else "items for that request"
+        lines = [
+            f"I do not see any {target} marked Vegan on the current menu.",
+            "",
+            "Closest vegetarian options, not confirmed vegan:",
+        ]
+        lines.extend(_format_preference_item_line(item) for item in alternatives)
+        lines.extend(
+            [
+                "",
+                "Please check cheese, dairy, and toppings before ordering.",
+            ]
+        )
+        return {
+            "display_text": "\n".join(lines),
+            "items": [item.as_dict() for item in alternatives],
+            "count": len(alternatives),
+            "response_kind": "preference_scoped_browse",
+            "passthrough": True,
+            "preferences": sorted(preferences),
+            "strict_match_count": 0,
+        }
+
+    target = f" under {section}" if section else ""
+    return {
+        "display_text": f"No matching preference-friendly items are available{target}.",
+        "items": [],
+        "count": 0,
+        "response_kind": "preference_scoped_browse",
+        "passthrough": False,
+        "preferences": sorted(preferences),
+    }
+
+
 def _serialize_hits(hits: list[RagHit]) -> list[dict[str, object]]:
+    """Handle serialize hits.
+
+    Args:
+        - hits: list[RagHit] - The hits value.
+
+    Returns:
+        - return list[dict[str, object]] - The return value.
+    """
     return [
         {
             "text": hit.text,
@@ -88,9 +339,23 @@ def _serialize_hits(hits: list[RagHit]) -> list[dict[str, object]]:
     ]
 
 
-def _retrieve_knowledge_source(source_key: str, query: str, max_results: int) -> list[RagHit]:
+def _retrieve_knowledge_source(
+    source_key: str, query: str, max_results: int
+) -> list[RagHit]:
+    """Handle retrieve knowledge source.
+
+    Args:
+        - source_key: str - The source key value.
+        - query: str - The query value.
+        - max_results: int - The max results value.
+
+    Returns:
+        - return list[RagHit] - The return value.
+    """
     source = rag_sources()[source_key]
-    return build_rag_service().retrieve(source.collection_name, query, limit=max_results)
+    return build_rag_service().retrieve(
+        source.collection_name, query, limit=max_results
+    )
 
 
 @observe_tool("browse_menu")
@@ -98,18 +363,11 @@ async def browse_menu(query: str, include_items: bool | None = None) -> ToolResp
     """Browse the menu index from a natural customer request.
 
     Args:
-        query: The user's menu browsing request, such as "show the menu",
-            "show me the coffees", "mocktails", or "show all coffee options".
-        include_items: Optional override. Use null/default for automatic
-            routing: first menu browsing shows sections; named sections show
-            their items; explicit detailed whole-menu requests show items.
+        - query: str - The query value.
+        - include_items: bool | None - The include items value.
 
     Returns:
-        ToolResult.ok(display_text=...) with the exact customer-facing menu
-        browsing response.
-
-    Example:
-        browse_menu(query="show me the coffees")
+        - return ToolResponse - The return value.
     """
     try:
         browse_result = browse_menu_query(query, include_items=include_items)
@@ -123,26 +381,25 @@ async def browse_menu(query: str, include_items: bool | None = None) -> ToolResp
 
 
 @observe_tool("browse_current_menu_request")
-async def browse_current_menu_request(include_items: bool | None = None) -> ToolResponse:
+async def browse_current_menu_request(
+    include_items: bool | None = None,
+) -> ToolResponse:
     """Browse the menu using the original Product Search request.
 
-    This avoids lossy tool arguments from the LLM. If the user asks "show pizza
-    options", the tool uses that exact request even if the model would have
-    paraphrased it.
-
     Args:
-        include_items: Optional override for whole-menu item display.
+        - include_items: bool | None - The include items value.
 
     Returns:
-        ToolResult.ok(display_text=...) with the exact customer-facing menu
-        browsing response.
-
-    Example:
-        browse_current_menu_request()
+        - return ToolResponse - The return value.
     """
     query = _CURRENT_PRODUCT_QUERY.get()
     if not query:
         return wrap(ToolResult.fail("No active Product Search request to browse."))
+
+    preferences = _active_product_preferences(query)
+    if preference_payload := _format_preference_scoped_browse(query, preferences):
+        _remember_menu_scope(query)
+        return wrap(ToolResult.ok(**preference_payload))
 
     response = await browse_menu(query=query, include_items=include_items)
     _remember_menu_scope(query)
@@ -153,16 +410,8 @@ async def browse_current_menu_request(include_items: bool | None = None) -> Tool
 async def filter_current_menu_by_price() -> ToolResponse:
     """Filter menu items by the price limit in the original Product Search request.
 
-    Use this for budget requests such as "items under 100", "drinks below 200",
-    or "food under INR 300". The price limit and optional category scope are
-    parsed from the original request so the model does not have to do numeric
-    filtering from retrieved chunks.
-
     Returns:
-        ToolResult.ok(display_text=..., items=..., max_price=...).
-
-    Example:
-        filter_current_menu_by_price()
+        - return ToolResponse - The return value.
     """
     query = _CURRENT_PRODUCT_QUERY.get()
     if not query:
@@ -188,15 +437,8 @@ async def filter_current_menu_by_price() -> ToolResponse:
 async def list_current_menu_prices() -> ToolResponse:
     """List menu prices for the original Product Search request.
 
-    Use this when the user asks for prices without a max/min budget, such as
-    "show prices", "prices for all coffees", "pizza prices", or a follow-up
-    like "show the prices for all".
-
     Returns:
-        ToolResult.ok(display_text=..., items=..., count=...).
-
-    Example:
-        list_current_menu_prices()
+        - return ToolResponse - The return value.
     """
     query = _CURRENT_PRODUCT_QUERY.get()
     if not query:
@@ -225,20 +467,11 @@ async def list_current_menu_prices() -> ToolResponse:
 async def find_current_menu_matches(max_results: int = 5) -> ToolResponse:
     """Find canonical menu items that match the current product request.
 
-    Use this for concept or preference requests that are not exact menu
-    sections, such as "any desserts", "something sweet", "light drinks",
-    "chocolate options", or "creamy coffee". It searches structured item
-    names, sections, tags, serving notes, dietary tags, descriptions, and
-    match aliases from the canonical menu document.
-
     Args:
-        max_results: Maximum number of matching menu items to return.
+        - max_results: int - The max results value.
 
     Returns:
-        ToolResult.ok(display_text=..., items=..., count=...).
-
-    Example:
-        find_current_menu_matches(max_results=4)
+        - return ToolResponse - The return value.
     """
     query = _CURRENT_PRODUCT_QUERY.get()
     if not query:
@@ -263,18 +496,11 @@ async def find_current_menu_matches(max_results: int = 5) -> ToolResponse:
 async def recommend_current_menu_items(max_results: int = 5) -> ToolResponse:
     """Return data-derived representative menu recommendations.
 
-    The selection is generated from the canonical menu document by alternating
-    through top-level groups and sections in document order. It does not use
-    manually selected item names or category names.
-
     Args:
-        max_results: Maximum number of menu items to return.
+        - max_results: int - The max results value.
 
     Returns:
-        ToolResult.ok(display_text=..., items=..., count=...).
-
-    Example:
-        recommend_current_menu_items(max_results=5)
+        - return ToolResponse - The return value.
     """
     try:
         items = recommend_menu_items(max_results=max_results)
@@ -299,17 +525,11 @@ async def list_menu_categories(
     """List menu categories from the canonical menu document.
 
     Args:
-        include_items: When true, include item names under each category.
-            The default is false so first menu-browsing replies show sections
-            only.
-        include_structured: When true, include structured category data.
+        - include_items: bool - The include items value.
+        - include_structured: bool - The include structured value.
 
     Returns:
-        ToolResult.ok(display_text=...) by default. Structured category data is
-        included only when include_structured is true.
-
-    Example:
-        list_menu_categories(include_items=False)
+        - return ToolResponse - The return value.
     """
     try:
         data = {"display_text": format_menu_categories(include_items=include_items)}
@@ -325,14 +545,10 @@ async def list_menu_section_items(section_name: str) -> ToolResponse:
     """List item names inside one menu section or section group.
 
     Args:
-        section_name: Section name from the menu, such as "Coffees",
-            "Mocktails", "Wraps", or a group alias like "drinks".
+        - section_name: str - The section name value.
 
     Returns:
-        ToolResult.ok(display_text=...) with the matching section item list.
-
-    Example:
-        list_menu_section_items(section_name="Coffees")
+        - return ToolResponse - The return value.
     """
     try:
         return wrap(ToolResult.ok(display_text=format_menu_section_items(section_name)))
@@ -345,18 +561,17 @@ async def search_products(query: str, max_results: int = 5) -> ToolResponse:
     """Search the menu.
 
     Args:
-        query: Search text to match against item name, category, or tags.
-        max_results: Maximum number of matching products to return.
+        - query: str - The query value.
+        - max_results: int - The max results value.
 
     Returns:
-        ToolResult.ok(items=..., count=...) or ToolResult.fail(error=...).
-
-    Example:
-        search_products(query="coffee", max_results=5)
+        - return ToolResponse - The return value.
     """
     try:
         items = menu_service.search_menu(get_store(), query, max_results)
-        return wrap(ToolResult.ok(items=[item.model_dump() for item in items], count=len(items)))
+        return wrap(
+            ToolResult.ok(items=[item.model_dump() for item in items], count=len(items))
+        )
     except ValidationError as e:
         return wrap(ToolResult.fail(str(e)))
     except Exception as e:
@@ -368,13 +583,10 @@ async def get_product_details(item_id: str) -> ToolResponse:
     """Full details for a single menu item by id.
 
     Args:
-        item_id: Menu item id (e.g. 'm001').
+        - item_id: str - The item id value.
 
     Returns:
-        ToolResult.ok(item=...) or ToolResult.fail(error=...).
-
-    Example:
-        get_product_details(item_id="m001")
+        - return ToolResponse - The return value.
     """
     try:
         item = menu_service.get_item(get_store(), item_id)
@@ -390,14 +602,11 @@ async def search_product_knowledge(query: str, max_results: int = 5) -> ToolResp
     """Retrieve menu knowledge from the product Qdrant collection.
 
     Args:
-        query: Natural-language menu question.
-        max_results: Maximum number of chunks to return.
+        - query: str - The query value.
+        - max_results: int - The max results value.
 
     Returns:
-        ToolResult.ok(results=..., count=...) or ToolResult.fail(error=...).
-
-    Example:
-        search_product_knowledge(query="vegan drinks under 300", max_results=3)
+        - return ToolResponse - The return value.
     """
     try:
         hits = _retrieve_knowledge_source("product", query, max_results)
@@ -407,18 +616,17 @@ async def search_product_knowledge(query: str, max_results: int = 5) -> ToolResp
 
 
 @observe_tool("search_menu_attribute_knowledge")
-async def search_menu_attribute_knowledge(query: str, max_results: int = 5) -> ToolResponse:
+async def search_menu_attribute_knowledge(
+    query: str, max_results: int = 5
+) -> ToolResponse:
     """Retrieve taste, ingredient, allergen, and suitability attributes.
 
     Args:
-        query: Natural-language menu attribute question.
-        max_results: Maximum number of chunks to return.
+        - query: str - The query value.
+        - max_results: int - The max results value.
 
     Returns:
-        ToolResult.ok(results=..., count=...) or ToolResult.fail(error=...).
-
-    Example:
-        search_menu_attribute_knowledge(query="sweet light drink without milk", max_results=3)
+        - return ToolResponse - The return value.
     """
     try:
         hits = _retrieve_knowledge_source("menu_attributes", query, max_results)
@@ -428,23 +636,26 @@ async def search_menu_attribute_knowledge(query: str, max_results: int = 5) -> T
 
 
 @observe_tool("search_product_and_attribute_knowledge")
-async def search_product_and_attribute_knowledge(query: str, max_results: int = 5) -> ToolResponse:
+async def search_product_and_attribute_knowledge(
+    query: str, max_results: int = 5
+) -> ToolResponse:
     """Retrieve menu facts and menu attributes in parallel.
 
     Args:
-        query: Natural-language product recommendation or matching question.
-        max_results: Maximum chunks to return from each collection.
+        - query: str - The query value.
+        - max_results: int - The max results value.
 
     Returns:
-        ToolResult.ok(menu_results=..., attribute_results=...) or ToolResult.fail(error=...).
-
-    Example:
-        search_product_and_attribute_knowledge(query="sweet but light cold drink", max_results=3)
+        - return ToolResponse - The return value.
     """
     try:
         menu_hits, attribute_hits = await asyncio.gather(
-            asyncio.to_thread(_retrieve_knowledge_source, "product", query, max_results),
-            asyncio.to_thread(_retrieve_knowledge_source, "menu_attributes", query, max_results),
+            asyncio.to_thread(
+                _retrieve_knowledge_source, "product", query, max_results
+            ),
+            asyncio.to_thread(
+                _retrieve_knowledge_source, "menu_attributes", query, max_results
+            ),
         )
         return wrap(
             ToolResult.ok(

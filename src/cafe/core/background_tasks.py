@@ -4,11 +4,10 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections.abc import Hashable
 from contextlib import suppress
 from contextvars import Context
-from collections.abc import Hashable
 from typing import Any, Awaitable
-
 
 log = logging.getLogger(__name__)
 
@@ -17,7 +16,15 @@ _BACKGROUND_CHAINS: dict[Hashable, asyncio.Task[Any]] = {}
 
 
 def session_task_key(user_id: str, session_id: str) -> tuple[str, str]:
-    """Return the ordering key used for session-level persistence tasks."""
+    """Return the ordering key used for session-level persistence tasks.
+
+    Args:
+        - user_id: str - The user id value.
+        - session_id: str - The session id value.
+
+    Returns:
+        - return tuple[str, str] - The return value.
+    """
     return (user_id, session_id)
 
 
@@ -29,9 +36,13 @@ def schedule_background(
 ) -> asyncio.Task[Any] | None:
     """Run awaitable later without inheriting request observability context.
 
-    A keyed task waits for the previous task with the same key first. This keeps
-    chat-memory/cart/order persistence ordered for each session while removing
-    SQL latency from the response path.
+    Args:
+        - awaitable: Awaitable[Any] - The awaitable value.
+        - name: str - The name value.
+        - key: Hashable | None - The key value.
+
+    Returns:
+        - return asyncio.Task[Any] | None - The return value.
     """
     try:
         loop = asyncio.get_running_loop()
@@ -45,6 +56,11 @@ def schedule_background(
     previous = _BACKGROUND_CHAINS.get(key) if key is not None else None
 
     async def runner() -> None:
+        """Handle runner.
+
+        Returns:
+            - return None - The return value.
+        """
         if previous is not None:
             with suppress(asyncio.CancelledError):
                 await previous
@@ -61,6 +77,14 @@ def schedule_background(
         _BACKGROUND_CHAINS[key] = task
 
     def cleanup(done: asyncio.Task[Any]) -> None:
+        """Handle cleanup.
+
+        Args:
+            - done: asyncio.Task[Any] - The done value.
+
+        Returns:
+            - return None - The return value.
+        """
         _BACKGROUND_TASKS.discard(done)
         if key is not None and _BACKGROUND_CHAINS.get(key) is done:
             _BACKGROUND_CHAINS.pop(key, None)
@@ -74,7 +98,15 @@ async def drain_background_tasks(
     key: Hashable | None = None,
     timeout: float | None = 5.0,
 ) -> None:
-    """Wait for scheduled background work, mainly for shutdown/tests/history APIs."""
+    """Wait for scheduled background work, mainly for shutdown/tests/history APIs.
+
+    Args:
+        - key: Hashable | None - The key value.
+        - timeout: float | None - The timeout value.
+
+    Returns:
+        - return None - The return value.
+    """
     if key is None:
         tasks = list(_BACKGROUND_TASKS)
     else:

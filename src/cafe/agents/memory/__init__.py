@@ -1,12 +1,11 @@
 """Public memory API for AgentScope agents.
 
 Storage/schema helpers live in ``storage.py``. This package initializer keeps
-agent-facing formatter and compression wiring separate from SQL persistence.
+agent-facing formatter wiring separate from SQL persistence.
 """
 
 from __future__ import annotations
 
-from agentscope.agent import ReActAgent
 from agentscope.formatter import (
     AnthropicChatFormatter,
     AnthropicMultiAgentFormatter,
@@ -31,8 +30,8 @@ from .storage import (
     APP_MEMORY_METADATA,
     CART_ITEMS_TABLE,
     CARTS_TABLE,
-    COMPRESSION_PROMPT,
     COMPRESSED_MARK,
+    COMPRESSION_PROMPT,
     CONVERSATION_MESSAGES_TABLE,
     CONVERSATION_SUMMARIES_TABLE,
     CONVERSATIONS_TABLE,
@@ -48,9 +47,9 @@ from .storage import (
     USERS_TABLE,
     AppSQLMemory,
     CafeConversationSummary,
+    SummaryCheckpoint,
     _normalize_async_database_url,
     _reset_storage_runtime_cache,
-    _window_size,
     build_context,
     clear_cart_snapshot,
     compress_memory_after_turn,
@@ -66,10 +65,19 @@ from .storage import (
     save_cart_snapshot,
     save_messages,
     save_order_snapshot,
+    should_compress_memory_after_turn,
 )
 
 
 def make_token_counter(settings: Settings):
+    """Handle make token counter.
+
+    Args:
+        - settings: Settings - The settings value.
+
+    Returns:
+        - return Any - The return value.
+    """
     provider = normalized_provider(settings)
     if provider in {"openai", "deepseek", "groq", "openrouter"}:
         return OpenAITokenCounter(settings.openai_model)
@@ -77,6 +85,14 @@ def make_token_counter(settings: Settings):
 
 
 def make_chat_formatter(settings: Settings):
+    """Handle make chat formatter.
+
+    Args:
+        - settings: Settings - The settings value.
+
+    Returns:
+        - return Any - The return value.
+    """
     kwargs = {
         "token_counter": make_token_counter(settings),
         "max_tokens": settings.memory_max_prompt_tokens,
@@ -96,6 +112,14 @@ def make_chat_formatter(settings: Settings):
 
 
 def make_multi_agent_formatter(settings: Settings):
+    """Handle make multi agent formatter.
+
+    Args:
+        - settings: Settings - The settings value.
+
+    Returns:
+        - return Any - The return value.
+    """
     kwargs = {
         "token_counter": make_token_counter(settings),
         "max_tokens": settings.memory_max_prompt_tokens,
@@ -112,18 +136,6 @@ def make_multi_agent_formatter(settings: Settings):
     if provider == "deepseek":
         return DeepSeekMultiAgentFormatter(**kwargs)
     return OpenAIMultiAgentFormatter(**kwargs)
-
-
-def make_compression_config(settings: Settings) -> ReActAgent.CompressionConfig:
-    return ReActAgent.CompressionConfig(
-        enable=True,
-        agent_token_counter=make_token_counter(settings),
-        trigger_threshold=settings.memory_compression_trigger_tokens,
-        keep_recent=_window_size(settings) + 1,
-        compression_prompt=COMPRESSION_PROMPT,
-        summary_template=SUMMARY_TEMPLATE,
-        summary_schema=CafeConversationSummary,
-    )
 
 
 __all__ = [
@@ -147,6 +159,7 @@ __all__ = [
     "USERS_TABLE",
     "AppSQLMemory",
     "CafeConversationSummary",
+    "SummaryCheckpoint",
     "_normalize_async_database_url",
     "_reset_storage_runtime_cache",
     "build_context",
@@ -161,12 +174,12 @@ __all__ = [
     "list_user_conversations",
     "load_memory",
     "make_chat_formatter",
-    "make_compression_config",
     "make_multi_agent_formatter",
     "make_token_counter",
     "resolve_menu_item_for_cart",
     "save_cart_snapshot",
     "save_messages",
     "save_order_snapshot",
+    "should_compress_memory_after_turn",
     "storage",
 ]

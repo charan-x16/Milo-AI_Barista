@@ -1,27 +1,28 @@
+"""Cafe tools order tools module."""
+
 from agentscope.tool import ToolResponse
 
+from cafe.agents.memory import clear_cart_snapshot, save_order_snapshot
 from cafe.core.observability import observe_tool
 from cafe.core.state import get_store
 from cafe.core.validator import ValidationError
-from cafe.agents.memory import clear_cart_snapshot, save_order_snapshot
 from cafe.models.tool_io import ToolResult
 from cafe.services import order_service
 from cafe.tools._wrap import wrap
 
 
 @observe_tool("place_order")
-async def place_order(session_id: str, max_budget_inr: int | None = None) -> ToolResponse:
+async def place_order(
+    session_id: str, max_budget_inr: int | None = None
+) -> ToolResponse:
     """Place an order from the current cart.
 
     Args:
-        session_id: The chat session id (passed by the system).
-        max_budget_inr: Optional maximum budget in INR.
+        - session_id: str - The session id value.
+        - max_budget_inr: int | None - The max budget inr value.
 
     Returns:
-        ToolResult.ok(order=...) or ToolResult.fail(error=...).
-
-    Example:
-        place_order(session_id="s1", max_budget_inr=500)
+        - return ToolResponse - The return value.
     """
     try:
         order = order_service.place_order(get_store(), session_id, max_budget_inr)
@@ -39,13 +40,10 @@ async def track_order(order_id: str) -> ToolResponse:
     """Get the current status and details for an order.
 
     Args:
-        order_id: Order id returned by place_order.
+        - order_id: str - The order id value.
 
     Returns:
-        ToolResult.ok(order=...) or ToolResult.fail(error=...).
-
-    Example:
-        track_order(order_id="ord-1234abcd")
+        - return ToolResponse - The return value.
     """
     try:
         order = order_service.get_order(get_store(), order_id)
@@ -62,13 +60,10 @@ async def cancel_order(order_id: str) -> ToolResponse:
     """Cancel a pending or confirmed order.
 
     Args:
-        order_id: Order id returned by place_order.
+        - order_id: str - The order id value.
 
     Returns:
-        ToolResult.ok(order=...) or ToolResult.fail(error=...).
-
-    Example:
-        cancel_order(order_id="ord-1234abcd")
+        - return ToolResponse - The return value.
     """
     try:
         order = order_service.cancel_order(get_store(), order_id)

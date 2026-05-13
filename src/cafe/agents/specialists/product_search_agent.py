@@ -5,8 +5,8 @@ from functools import lru_cache
 from pathlib import Path
 
 from agentscope.agent import ReActAgent
-from agentscope.message import TextBlock
 from agentscope.memory import InMemoryMemory
+from agentscope.message import TextBlock
 from agentscope.tool import Toolkit, ToolResponse, view_text_file
 
 from cafe.agents.llm import make_chat_model
@@ -15,8 +15,8 @@ from cafe.agents.prompts import PRODUCT_SEARCH_PROMPT
 from cafe.config import get_settings
 from cafe.tools.product_tools import (
     browse_current_menu_request,
-    find_current_menu_matches,
     filter_current_menu_by_price,
+    find_current_menu_matches,
     list_current_menu_prices,
     recommend_current_menu_items,
     search_menu_attribute_knowledge,
@@ -24,12 +24,21 @@ from cafe.tools.product_tools import (
     search_product_knowledge,
 )
 
-
 _SKILL_DIR = Path(__file__).resolve().parents[2] / "skills" / "menu_navigation"
 
 
-def _menu_answer_postprocess(_tool_call, tool_response: ToolResponse) -> ToolResponse | None:
-    """Render menu answer tools as final-answer data for ProductSearchAgent."""
+def _menu_answer_postprocess(
+    _tool_call, tool_response: ToolResponse
+) -> ToolResponse | None:
+    """Render menu answer tools as final-answer data for ProductSearchAgent.
+
+    Args:
+        - _tool_call: Any - The tool call value.
+        - tool_response: ToolResponse - The tool response value.
+
+    Returns:
+        - return ToolResponse | None - The return value.
+    """
     text = "".join(
         block.get("text", "") if isinstance(block, dict) else getattr(block, "text", "")
         for block in tool_response.content
@@ -63,16 +72,17 @@ def _menu_answer_postprocess(_tool_call, tool_response: ToolResponse) -> ToolRes
             "successful list."
         )
 
-    rendered = (
-        "FINAL_ANSWER_DATA:\n"
-        f"{display_text}\n\n"
-        f"{style_instruction}"
-    )
+    rendered = "FINAL_ANSWER_DATA:\n" f"{display_text}\n\n" f"{style_instruction}"
     return ToolResponse(content=[TextBlock(type="text", text=rendered)])
 
 
 @lru_cache(maxsize=1)
 def _make_toolkit() -> Toolkit:
+    """Handle make toolkit.
+
+    Returns:
+        - return Toolkit - The return value.
+    """
     tk = Toolkit()
     tk.register_tool_function(
         browse_current_menu_request,
@@ -103,6 +113,11 @@ def _make_toolkit() -> Toolkit:
 
 
 def make_product_search_agent() -> ReActAgent:
+    """Handle make product search agent.
+
+    Returns:
+        - return ReActAgent - The return value.
+    """
     s = get_settings()
     return ReActAgent(
         name="ProductSearchAgent",
@@ -111,5 +126,5 @@ def make_product_search_agent() -> ReActAgent:
         formatter=make_multi_agent_formatter(s),
         toolkit=_make_toolkit(),
         memory=InMemoryMemory(),
-        max_iters=6,
+        max_iters=s.specialist_max_iters,
     )

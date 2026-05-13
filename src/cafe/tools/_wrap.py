@@ -9,7 +9,19 @@ from cafe.models.tool_io import ToolResult
 
 
 def wrap(result: ToolResult) -> ToolResponse:
-    return ToolResponse(content=[TextBlock(
-        type="text",
-        text=json.dumps(result.model_dump(), ensure_ascii=False),
-    )])
+    """Handle wrap.
+
+    Args:
+        - result: ToolResult - The result value.
+
+    Returns:
+        - return ToolResponse - The return value.
+    """
+    return ToolResponse(
+        content=[
+            TextBlock(
+                type="text",
+                text=json.dumps(result.model_dump(), ensure_ascii=False),
+            )
+        ]
+    )

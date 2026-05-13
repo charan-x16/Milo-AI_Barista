@@ -1,5 +1,6 @@
-from cafe.core.validator import ValidationError
+"""Cafe services faq service module."""
 
+from cafe.core.validator import ValidationError
 
 _FAQ = {
     "hours": "We are open daily 7 AM to 11 PM.",
@@ -23,7 +24,14 @@ _FAQ_KEYWORDS = {
 
 
 def lookup_faq(question: str) -> tuple[str, str]:
-    """Returns (topic, answer). Raises ValidationError on no match."""
+    """Returns (topic, answer).
+
+    Args:
+        - question: str - The question value.
+
+    Returns:
+        - return tuple[str, str] - The return value.
+    """
     normalized_question = question.casefold()
 
     for topic, keywords in _FAQ_KEYWORDS.items():

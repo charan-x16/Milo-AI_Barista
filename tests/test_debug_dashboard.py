@@ -1,3 +1,5 @@
+"""Tests test debug dashboard module."""
+
 from fastapi.testclient import TestClient
 
 from cafe.api.debug import build_flow_state
@@ -6,6 +8,11 @@ from cafe.core.debug_trace import get_debug_trace_store
 
 
 def test_debug_flow_state_shape():
+    """Verify debug flow state shape.
+
+    Returns:
+        - return None - The return value.
+    """
     get_debug_trace_store().reset()
 
     state = build_flow_state()
@@ -17,6 +24,11 @@ def test_debug_flow_state_shape():
 
 
 def test_debug_dashboard_page_served():
+    """Verify debug dashboard page served.
+
+    Returns:
+        - return None - The return value.
+    """
     client = TestClient(app)
 
     response = client.get("/debug/flow")
@@ -28,6 +40,11 @@ def test_debug_dashboard_page_served():
 
 
 def test_root_redirects_to_dashboard():
+    """Verify root redirects to dashboard.
+
+    Returns:
+        - return None - The return value.
+    """
     client = TestClient(app)
 
     response = client.get("/", follow_redirects=False)

@@ -1,10 +1,11 @@
+"""Cafe services menu index service module."""
+
 from __future__ import annotations
 
 import re
 from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
-
 
 DOCS_DIR = Path(__file__).resolve().parents[1] / "Docs"
 DEFAULT_MENU_DOC_PATH = DOCS_DIR / "BTB_Menu_Enhanced.md"
@@ -19,9 +20,22 @@ class MenuSection:
 
     @property
     def item_count(self) -> int:
+        """Handle item count.
+
+        Returns:
+            - return int - The return value.
+        """
         return len(self.items)
 
     def as_dict(self, *, include_items: bool = True) -> dict[str, object]:
+        """Handle as dict.
+
+        Args:
+            - include_items: bool - The include items value.
+
+        Returns:
+            - return dict[str, object] - The return value.
+        """
         data: dict[str, object] = {
             "top_level": self.top_level,
             "name": self.name,
@@ -40,6 +54,11 @@ class MenuIndex:
 
     @property
     def top_level_categories(self) -> tuple[str, ...]:
+        """Handle top level categories.
+
+        Returns:
+            - return tuple[str, ...] - The return value.
+        """
         seen: list[str] = []
         for section in self.sections:
             if section.top_level not in seen:
@@ -48,11 +67,25 @@ class MenuIndex:
 
     @property
     def flat_category_names(self) -> tuple[str, ...]:
+        """Handle flat category names.
+
+        Returns:
+            - return tuple[str, ...] - The return value.
+        """
         return tuple(section.name for section in self.sections)
 
     def sections_for_top_level(self, top_level: str) -> tuple[MenuSection, ...]:
+        """Handle sections for top level.
+
+        Args:
+            - top_level: str - The top level value.
+
+        Returns:
+            - return tuple[MenuSection, ...] - The return value.
+        """
         return tuple(
-            section for section in self.sections
+            section
+            for section in self.sections
             if section.top_level.casefold() == top_level.casefold()
         )
 
@@ -67,6 +100,11 @@ class MenuPriceItem:
     dietary: str | None = None
 
     def as_dict(self) -> dict[str, object]:
+        """Handle as dict.
+
+        Returns:
+            - return dict[str, object] - The return value.
+        """
         data: dict[str, object] = {
             "name": self.name,
             "category": self.category,
@@ -94,6 +132,11 @@ class MenuItemMatch:
     score: int
 
     def as_dict(self) -> dict[str, object]:
+        """Handle as dict.
+
+        Returns:
+            - return dict[str, object] - The return value.
+        """
         data: dict[str, object] = {
             "name": self.name,
             "section": self.section,
@@ -122,6 +165,11 @@ class MenuBrowseResult:
     requested_section: str | None = None
 
     def as_dict(self) -> dict[str, object]:
+        """Handle as dict.
+
+        Returns:
+            - return dict[str, object] - The return value.
+        """
         data: dict[str, object] = {
             "display_text": self.display_text,
             "response_kind": self.response_kind,
@@ -133,6 +181,14 @@ class MenuBrowseResult:
 
 
 def _normalize(value: str) -> str:
+    """Handle normalize.
+
+    Args:
+        - value: str - The value value.
+
+    Returns:
+        - return str - The return value.
+    """
     normalized = value.casefold().strip()
     for suffix in (" section", " category", " items", " list", " options"):
         normalized = normalized.removesuffix(suffix)
@@ -140,32 +196,82 @@ def _normalize(value: str) -> str:
 
 
 def _phrase_normalize(value: str) -> str:
+    """Handle phrase normalize.
+
+    Args:
+        - value: str - The value value.
+
+    Returns:
+        - return str - The return value.
+    """
     normalized = re.sub(r"[^a-z0-9]+", " ", value.casefold())
     return " ".join(normalized.split())
 
 
 def _contains_phrase(text: str, phrase: str) -> bool:
+    """Handle contains phrase.
+
+    Args:
+        - text: str - The text value.
+        - phrase: str - The phrase value.
+
+    Returns:
+        - return bool - The return value.
+    """
     if not phrase:
         return False
     return f" {phrase} " in f" {text} "
 
 
 def _parse_markdown_table_row(line: str) -> list[str]:
+    """Handle parse markdown table row.
+
+    Args:
+        - line: str - The line value.
+
+    Returns:
+        - return list[str] - The return value.
+    """
     if not line.startswith("|") or "---" in line:
         return []
     return [part.strip() for part in line.strip("|").split("|")]
 
 
 def _parse_price(value: str) -> int | None:
+    """Handle parse price.
+
+    Args:
+        - value: str - The value value.
+
+    Returns:
+        - return int | None - The return value.
+    """
     match = re.search(r"\d+", value)
     return int(match.group(0)) if match else None
 
 
 def _clean_price_text(value: str) -> str:
+    """Handle clean price text.
+
+    Args:
+        - value: str - The value value.
+
+    Returns:
+        - return str - The return value.
+    """
     return re.sub(r"[^\d/() A-Za-z.+-]+", " ", value).strip()
 
 
 def _next_content_line(lines: list[str], start_index: int) -> str:
+    """Handle next content line.
+
+    Args:
+        - lines: list[str] - The lines value.
+        - start_index: int - The start index value.
+
+    Returns:
+        - return str - The return value.
+    """
     for raw_line in lines[start_index:]:
         line = raw_line.strip()
         if line and line != "---":
@@ -174,14 +280,20 @@ def _next_content_line(lines: list[str], start_index: int) -> str:
 
 
 def _parse_alias_line(line: str) -> tuple[str, tuple[str, ...]] | None:
+    """Handle parse alias line.
+
+    Args:
+        - line: str - The line value.
+
+    Returns:
+        - return tuple[str, tuple[str, ...]] | None - The return value.
+    """
     match = re.match(r"- \*\*(.+?):\*\*\s*(.+)$", line)
     if not match:
         return None
     alias = _phrase_normalize(match.group(1))
     targets = tuple(
-        target.strip()
-        for target in match.group(2).split(",")
-        if target.strip()
+        target.strip() for target in match.group(2).split(",") if target.strip()
     )
     if not alias or not targets:
         return None
@@ -190,6 +302,14 @@ def _parse_alias_line(line: str) -> tuple[str, tuple[str, ...]] | None:
 
 @lru_cache
 def build_menu_index(menu_doc_path: str | None = None) -> MenuIndex:
+    """Build the menu index.
+
+    Args:
+        - menu_doc_path: str | None - The menu doc path value.
+
+    Returns:
+        - return MenuIndex - The return value.
+    """
     path = Path(menu_doc_path) if menu_doc_path else DEFAULT_MENU_DOC_PATH
     text = path.read_text(encoding="utf-8")
     lines = text.splitlines()
@@ -200,6 +320,11 @@ def build_menu_index(menu_doc_path: str | None = None) -> MenuIndex:
     in_aliases = False
 
     def flush_current() -> None:
+        """Handle flush current.
+
+        Returns:
+            - return None - The return value.
+        """
         nonlocal current_path, current_items
         if current_path is None:
             return
@@ -259,7 +384,17 @@ def build_menu_index(menu_doc_path: str | None = None) -> MenuIndex:
 
 
 @lru_cache
-def build_menu_match_aliases(menu_doc_path: str | None = None) -> dict[str, tuple[str, ...]]:
+def build_menu_match_aliases(
+    menu_doc_path: str | None = None,
+) -> dict[str, tuple[str, ...]]:
+    """Build the menu match aliases.
+
+    Args:
+        - menu_doc_path: str | None - The menu doc path value.
+
+    Returns:
+        - return dict[str, tuple[str, ...]] - The return value.
+    """
     path = Path(menu_doc_path) if menu_doc_path else DEFAULT_MENU_DOC_PATH
     aliases: dict[str, tuple[str, ...]] = {}
     in_aliases = False
@@ -283,7 +418,17 @@ def build_menu_match_aliases(menu_doc_path: str | None = None) -> dict[str, tupl
 
 
 @lru_cache
-def build_menu_item_match_index(menu_doc_path: str | None = None) -> tuple[MenuItemMatch, ...]:
+def build_menu_item_match_index(
+    menu_doc_path: str | None = None,
+) -> tuple[MenuItemMatch, ...]:
+    """Build the menu item match index.
+
+    Args:
+        - menu_doc_path: str | None - The menu doc path value.
+
+    Returns:
+        - return tuple[MenuItemMatch, ...] - The return value.
+    """
     path = Path(menu_doc_path) if menu_doc_path else DEFAULT_MENU_DOC_PATH
     lines = path.read_text(encoding="utf-8").splitlines()
     section_path: tuple[str, ...] | None = None
@@ -292,6 +437,11 @@ def build_menu_item_match_index(menu_doc_path: str | None = None) -> tuple[MenuI
     items: list[MenuItemMatch] = []
 
     def flush_current() -> None:
+        """Handle flush current.
+
+        Returns:
+            - return None - The return value.
+        """
         nonlocal current_name, current_fields
         if current_name is None or section_path is None:
             current_name = None
@@ -360,7 +510,17 @@ def build_menu_item_match_index(menu_doc_path: str | None = None) -> tuple[MenuI
 
 
 @lru_cache
-def build_menu_price_index(menu_doc_path: str | None = None) -> tuple[MenuPriceItem, ...]:
+def build_menu_price_index(
+    menu_doc_path: str | None = None,
+) -> tuple[MenuPriceItem, ...]:
+    """Build the menu price index.
+
+    Args:
+        - menu_doc_path: str | None - The menu doc path value.
+
+    Returns:
+        - return tuple[MenuPriceItem, ...] - The return value.
+    """
     path = Path(menu_doc_path) if menu_doc_path else DEFAULT_MENU_DOC_PATH
     lines = path.read_text(encoding="utf-8").splitlines()
     items: list[MenuPriceItem] = []
@@ -467,12 +627,29 @@ _MENU_OVERVIEW_TERMS = {
 
 
 def _menu_item_by_name(menu_doc_path: str | None = None) -> dict[str, MenuItemMatch]:
+    """Handle menu item by name.
+
+    Args:
+        - menu_doc_path: str | None - The menu doc path value.
+
+    Returns:
+        - return dict[str, MenuItemMatch] - The return value.
+    """
     return {item.name: item for item in build_menu_item_match_index(menu_doc_path)}
 
 
 def _query_match_terms(query: str) -> tuple[str, ...]:
+    """Handle query match terms.
+
+    Args:
+        - query: str - The query value.
+
+    Returns:
+        - return tuple[str, ...] - The return value.
+    """
     words = [
-        word for word in _phrase_normalize(query).split()
+        word
+        for word in _phrase_normalize(query).split()
         if len(word) > 2 and word not in _MATCH_STOPWORDS
     ]
     terms: list[str] = []
@@ -493,6 +670,15 @@ def _expanded_query_match_terms(
     *,
     menu_doc_path: str | None = None,
 ) -> tuple[str, ...]:
+    """Handle expanded query match terms.
+
+    Args:
+        - query: str - The query value.
+        - menu_doc_path: str | None - The menu doc path value.
+
+    Returns:
+        - return tuple[str, ...] - The return value.
+    """
     terms = list(_query_match_terms(query))
     text = _phrase_normalize(query)
 
@@ -511,10 +697,26 @@ def _expanded_query_match_terms(
 
 
 def _terms_for_text(value: str) -> set[str]:
+    """Handle terms for text.
+
+    Args:
+        - value: str - The value value.
+
+    Returns:
+        - return set[str] - The return value.
+    """
     return set(_query_match_terms(value))
 
 
 def _section_matches_for_labels(labels: tuple[str, ...]) -> tuple[MenuSection, ...]:
+    """Handle section matches for labels.
+
+    Args:
+        - labels: tuple[str, ...] - The labels value.
+
+    Returns:
+        - return tuple[MenuSection, ...] - The return value.
+    """
     matches: list[MenuSection] = []
     seen: set[tuple[str, ...]] = set()
     for label in labels:
@@ -527,12 +729,21 @@ def _section_matches_for_labels(labels: tuple[str, ...]) -> tuple[MenuSection, .
 
 
 def _requested_sections_from_query(query: str) -> tuple[str, ...]:
+    """Handle requested sections from query.
+
+    Args:
+        - query: str - The query value.
+
+    Returns:
+        - return tuple[str, ...] - The return value.
+    """
     index = build_menu_index()
     text = _phrase_normalize(query)
     candidates: list[tuple[str, str, tuple[MenuSection, ...]]] = []
 
     matched_aliases = [
-        alias for alias in sorted(index.aliases, key=len, reverse=True)
+        alias
+        for alias in sorted(index.aliases, key=len, reverse=True)
         if _contains_phrase(text, _phrase_normalize(alias))
     ]
 
@@ -547,13 +758,13 @@ def _requested_sections_from_query(query: str) -> tuple[str, ...]:
         sections = resolve_sections(alias)
         if sections:
             exact_singular_sections = tuple(
-                section for section in sections
+                section
+                for section in sections
                 if _normalize(section.name).removesuffix("s") == normalized_alias
                 or _normalize(section.path[-1]).removesuffix("s") == normalized_alias
             )
             broad_alias = any(
-                _contains_phrase(text, word)
-                for word in ("all", "option", "options")
+                _contains_phrase(text, word) for word in ("all", "option", "options")
             )
             if not broad_alias and len(exact_singular_sections) == 1:
                 section = exact_singular_sections[0]
@@ -561,7 +772,9 @@ def _requested_sections_from_query(query: str) -> tuple[str, ...]:
             else:
                 candidates.append((alias, normalized_alias, sections))
 
-    for section in sorted(index.sections, key=lambda item: len(item.name), reverse=True):
+    for section in sorted(
+        index.sections, key=lambda item: len(item.name), reverse=True
+    ):
         variants = {
             _phrase_normalize(section.name),
             _phrase_normalize(section.path[-1]),
@@ -572,7 +785,9 @@ def _requested_sections_from_query(query: str) -> tuple[str, ...]:
             for variant in list(variants)
             if variant.endswith("s")
         )
-        matched_variant = next((variant for variant in variants if _contains_phrase(text, variant)), None)
+        matched_variant = next(
+            (variant for variant in variants if _contains_phrase(text, variant)), None
+        )
         if matched_variant:
             candidates.append((section.name, matched_variant, (section,)))
 
@@ -584,12 +799,18 @@ def _requested_sections_from_query(query: str) -> tuple[str, ...]:
                 for alias in matched_aliases
             ):
                 continue
-            candidates.append((top_level, normalized, index.sections_for_top_level(top_level)))
+            candidates.append(
+                (top_level, normalized, index.sections_for_top_level(top_level))
+            )
 
     labels: list[str] = []
     seen_paths: set[tuple[str, ...]] = set()
-    for label, _matched_text, sections in sorted(candidates, key=lambda item: len(item[1]), reverse=True):
-        new_sections = [section for section in sections if section.path not in seen_paths]
+    for label, _matched_text, sections in sorted(
+        candidates, key=lambda item: len(item[1]), reverse=True
+    ):
+        new_sections = [
+            section for section in sections if section.path not in seen_paths
+        ]
         if not new_sections:
             continue
         labels.append(label)
@@ -599,6 +820,15 @@ def _requested_sections_from_query(query: str) -> tuple[str, ...]:
 
 
 def _query_has_item_match_modifier(query: str, labels: tuple[str, ...]) -> bool:
+    """Handle query has item match modifier.
+
+    Args:
+        - query: str - The query value.
+        - labels: tuple[str, ...] - The labels value.
+
+    Returns:
+        - return bool - The return value.
+    """
     query_terms = set(_query_match_terms(query))
     if not query_terms:
         return False
@@ -611,6 +841,14 @@ def _query_has_item_match_modifier(query: str, labels: tuple[str, ...]) -> bool:
 
 
 def _query_is_pure_menu_overview(query: str) -> bool:
+    """Handle query is pure menu overview.
+
+    Args:
+        - query: str - The query value.
+
+    Returns:
+        - return bool - The return value.
+    """
     text = _phrase_normalize(query)
     if not any(
         _contains_phrase(text, phrase)
@@ -628,6 +866,14 @@ def _query_is_pure_menu_overview(query: str) -> bool:
 
 
 def _match_search_text(item: MenuItemMatch) -> str:
+    """Handle match search text.
+
+    Args:
+        - item: MenuItemMatch - The item value.
+
+    Returns:
+        - return str - The return value.
+    """
     return _phrase_normalize(
         " ".join(
             part or ""
@@ -650,6 +896,16 @@ def search_menu_item_matches(
     max_results: int = 5,
     menu_doc_path: str | None = None,
 ) -> tuple[MenuItemMatch, ...]:
+    """Handle search menu item matches.
+
+    Args:
+        - query: str - The query value.
+        - max_results: int - The max results value.
+        - menu_doc_path: str | None - The menu doc path value.
+
+    Returns:
+        - return tuple[MenuItemMatch, ...] - The return value.
+    """
     raw_terms = _query_match_terms(query)
     terms = _expanded_query_match_terms(query, menu_doc_path=menu_doc_path)
     if not terms:
@@ -670,7 +926,9 @@ def search_menu_item_matches(
             continue
 
         search_text = _match_search_text(item)
-        matched_terms = tuple(term for term in terms if _contains_phrase(search_text, term))
+        matched_terms = tuple(
+            term for term in terms if _contains_phrase(search_text, term)
+        )
         if not matched_terms:
             continue
         if required_terms and not all(term in matched_terms for term in required_terms):
@@ -707,6 +965,16 @@ def _copy_menu_item(
     matched_terms: tuple[str, ...] = (),
     score: int = 0,
 ) -> MenuItemMatch:
+    """Handle copy menu item.
+
+    Args:
+        - item: MenuItemMatch - The item value.
+        - matched_terms: tuple[str, ...] - The matched terms value.
+        - score: int - The score value.
+
+    Returns:
+        - return MenuItemMatch - The return value.
+    """
     return MenuItemMatch(
         name=item.name,
         section=item.section,
@@ -728,10 +996,12 @@ def recommend_menu_items(
 ) -> tuple[MenuItemMatch, ...]:
     """Return a stable, data-derived diverse sample from the menu.
 
-    The selector uses only the parsed menu document: top-level order, section
-    order, and item order. It alternates across top-level groups, then walks
-    each group's sections in document order. No item or category names are
-    encoded in code.
+    Args:
+        - max_results: int - The max results value.
+        - menu_doc_path: str | None - The menu doc path value.
+
+    Returns:
+        - return tuple[MenuItemMatch, ...] - The return value.
     """
     item_by_name = _menu_item_by_name(menu_doc_path)
     index = build_menu_index(menu_doc_path)
@@ -775,6 +1045,14 @@ def recommend_menu_items(
 
 
 def _format_item_lines(items: tuple[MenuItemMatch, ...]) -> list[str]:
+    """Format the item lines.
+
+    Args:
+        - items: tuple[MenuItemMatch, ...] - The items value.
+
+    Returns:
+        - return list[str] - The return value.
+    """
     lines: list[str] = []
     for item in items:
         details = []
@@ -795,6 +1073,15 @@ def format_menu_recommendations(
     max_results: int = 5,
     menu_doc_path: str | None = None,
 ) -> str:
+    """Format the menu recommendations.
+
+    Args:
+        - max_results: int - The max results value.
+        - menu_doc_path: str | None - The menu doc path value.
+
+    Returns:
+        - return str - The return value.
+    """
     items = recommend_menu_items(max_results=max_results, menu_doc_path=menu_doc_path)
     if not items:
         return "No menu recommendations are available from the current menu data."
@@ -810,6 +1097,16 @@ def format_menu_item_matches(
     max_results: int = 5,
     menu_doc_path: str | None = None,
 ) -> str:
+    """Format the menu item matches.
+
+    Args:
+        - query: str - The query value.
+        - max_results: int - The max results value.
+        - menu_doc_path: str | None - The menu doc path value.
+
+    Returns:
+        - return str - The return value.
+    """
     matches = search_menu_item_matches(
         query,
         max_results=max_results,
@@ -818,9 +1115,7 @@ def format_menu_item_matches(
     raw_terms = _query_match_terms(query)
     expanded_terms = _expanded_query_match_terms(query, menu_doc_path=menu_doc_path)
     requested_sections = (
-        ()
-        if expanded_terms != raw_terms
-        else _requested_sections_from_query(query)
+        () if expanded_terms != raw_terms else _requested_sections_from_query(query)
     )
     requested_section_text = ", ".join(requested_sections)
     if not matches:
@@ -843,12 +1138,19 @@ def format_menu_item_matches(
 
 
 def get_menu_categories(*, include_items: bool = True) -> dict[str, object]:
+    """Return the menu categories.
+
+    Args:
+        - include_items: bool - The include items value.
+
+    Returns:
+        - return dict[str, object] - The return value.
+    """
     index = build_menu_index()
     return {
         "top_level_categories": list(index.top_level_categories),
         "categories": [
-            section.as_dict(include_items=include_items)
-            for section in index.sections
+            section.as_dict(include_items=include_items) for section in index.sections
         ],
         "flat_category_names": list(index.flat_category_names),
         "aliases": {alias: list(targets) for alias, targets in index.aliases.items()},
@@ -856,15 +1158,28 @@ def get_menu_categories(*, include_items: bool = True) -> dict[str, object]:
 
 
 def _resolve_alias(index: MenuIndex, alias: str) -> tuple[MenuSection, ...]:
+    """Handle resolve alias.
+
+    Args:
+        - index: MenuIndex - The index value.
+        - alias: str - The alias value.
+
+    Returns:
+        - return tuple[MenuSection, ...] - The return value.
+    """
     targets = index.aliases.get(_phrase_normalize(alias), ())
     matches: list[MenuSection] = []
     for target in targets:
-        if any(target.casefold() == top_level.casefold() for top_level in index.top_level_categories):
+        if any(
+            target.casefold() == top_level.casefold()
+            for top_level in index.top_level_categories
+        ):
             matches.extend(index.sections_for_top_level(target))
             continue
 
         matches.extend(
-            section for section in index.sections
+            section
+            for section in index.sections
             if _normalize(section.name) == _normalize(target)
         )
 
@@ -872,12 +1187,19 @@ def _resolve_alias(index: MenuIndex, alias: str) -> tuple[MenuSection, ...]:
 
 
 def resolve_sections(section_name: str) -> tuple[MenuSection, ...]:
+    """Handle resolve sections.
+
+    Args:
+        - section_name: str - The section name value.
+
+    Returns:
+        - return tuple[MenuSection, ...] - The return value.
+    """
     index = build_menu_index()
     normalized = _normalize(section_name)
 
     exact = tuple(
-        section for section in index.sections
-        if _normalize(section.name) == normalized
+        section for section in index.sections if _normalize(section.name) == normalized
     )
     if exact:
         return exact
@@ -888,24 +1210,40 @@ def resolve_sections(section_name: str) -> tuple[MenuSection, ...]:
 
     singular = normalized.removesuffix("s")
     singular_matches = tuple(
-        section for section in index.sections
+        section
+        for section in index.sections
         if _normalize(section.name).removesuffix("s") == singular
     )
     if singular_matches:
         return singular_matches
 
     return tuple(
-        section for section in index.sections
-        if normalized in _normalize(section.name)
+        section for section in index.sections if normalized in _normalize(section.name)
     )
 
 
 def _requested_section_from_query(query: str) -> str | None:
+    """Handle requested section from query.
+
+    Args:
+        - query: str - The query value.
+
+    Returns:
+        - return str | None - The return value.
+    """
     sections = _requested_sections_from_query(query)
     return sections[0] if sections else None
 
 
 def _query_wants_complete_items(query: str) -> bool:
+    """Handle query wants complete items.
+
+    Args:
+        - query: str - The query value.
+
+    Returns:
+        - return bool - The return value.
+    """
     text = _phrase_normalize(query)
     item_words = ("items", "item list", "detailed", "with items", "complete")
     whole_menu_words = ("menu", "whole menu", "entire menu", "full menu")
@@ -915,10 +1253,26 @@ def _query_wants_complete_items(query: str) -> bool:
 
 
 def _query_requests_menu_overview(query: str) -> bool:
+    """Handle query requests menu overview.
+
+    Args:
+        - query: str - The query value.
+
+    Returns:
+        - return bool - The return value.
+    """
     return _query_is_pure_menu_overview(query)
 
 
 def format_menu_categories(*, include_items: bool = False) -> str:
+    """Format the menu categories.
+
+    Args:
+        - include_items: bool - The include items value.
+
+    Returns:
+        - return str - The return value.
+    """
     data = get_menu_categories(include_items=include_items)
     if include_items:
         lines = ["Here is the complete menu, grouped by section:"]
@@ -942,6 +1296,14 @@ def format_menu_categories(*, include_items: bool = False) -> str:
 
 
 def format_menu_section_items(section_name: str) -> str:
+    """Format the menu section items.
+
+    Args:
+        - section_name: str - The section name value.
+
+    Returns:
+        - return str - The return value.
+    """
     matches = resolve_sections(section_name)
     if not matches:
         sections = ", ".join(build_menu_index().flat_category_names)
@@ -964,6 +1326,15 @@ def format_menu_section_items(section_name: str) -> str:
 
 
 def format_menu_multi_section_items(section_names: tuple[str, ...], query: str) -> str:
+    """Format the menu multi section items.
+
+    Args:
+        - section_names: tuple[str, ...] - The section names value.
+        - query: str - The query value.
+
+    Returns:
+        - return str - The return value.
+    """
     matches = _section_matches_for_labels(section_names)
     if not matches:
         sections = ", ".join(build_menu_index().flat_category_names)
@@ -980,12 +1351,30 @@ def format_menu_multi_section_items(section_names: tuple[str, ...], query: str) 
 
 
 def format_menu_browse_query(query: str, *, include_items: bool | None = None) -> str:
-    """Return the right menu browsing display text for a natural query."""
+    """Return the right menu browsing display text for a natural query.
+
+    Args:
+        - query: str - The query value.
+        - include_items: bool | None - The include items value.
+
+    Returns:
+        - return str - The return value.
+    """
     return browse_menu_query(query, include_items=include_items).display_text
 
 
-def browse_menu_query(query: str, *, include_items: bool | None = None) -> MenuBrowseResult:
-    """Return menu browsing text plus whether it is safe to pass through."""
+def browse_menu_query(
+    query: str, *, include_items: bool | None = None
+) -> MenuBrowseResult:
+    """Return menu browsing text plus whether it is safe to pass through.
+
+    Args:
+        - query: str - The query value.
+        - include_items: bool | None - The include items value.
+
+    Returns:
+        - return MenuBrowseResult - The return value.
+    """
     requested_sections = _requested_sections_from_query(query)
     requested_section = ", ".join(requested_sections) if requested_sections else None
     if requested_sections:
@@ -1002,7 +1391,11 @@ def browse_menu_query(query: str, *, include_items: bool | None = None) -> MenuB
         )
 
     wants_complete_items = _query_wants_complete_items(query)
-    should_include_items = wants_complete_items if include_items is None else include_items and wants_complete_items
+    should_include_items = (
+        wants_complete_items
+        if include_items is None
+        else include_items and wants_complete_items
+    )
     is_menu_overview = _query_requests_menu_overview(query)
     return MenuBrowseResult(
         display_text=format_menu_categories(include_items=should_include_items),
@@ -1012,6 +1405,14 @@ def browse_menu_query(query: str, *, include_items: bool | None = None) -> MenuB
 
 
 def extract_price_limit(query: str) -> int | None:
+    """Handle extract price limit.
+
+    Args:
+        - query: str - The query value.
+
+    Returns:
+        - return int | None - The return value.
+    """
     text = _phrase_normalize(query)
     patterns = (
         r"(?:under|below|less than|within|max|maximum|upto|up to)\s*(?:rs|rupees|inr)?\s*(\d+)",
@@ -1026,6 +1427,14 @@ def extract_price_limit(query: str) -> int | None:
 
 
 def _price_scope_from_query(query: str) -> str | None:
+    """Handle price scope from query.
+
+    Args:
+        - query: str - The query value.
+
+    Returns:
+        - return str | None - The return value.
+    """
     requested_section = _requested_section_from_query(query)
     if requested_section:
         matches = resolve_sections(requested_section)
@@ -1042,26 +1451,53 @@ def _price_scope_from_query(query: str) -> str | None:
 
 
 def requested_section_from_query(query: str) -> str | None:
+    """Handle requested section from query.
+
+    Args:
+        - query: str - The query value.
+
+    Returns:
+        - return str | None - The return value.
+    """
     return _requested_section_from_query(query)
 
 
 def is_price_list_request(query: str) -> bool:
+    """Return whether price list request.
+
+    Args:
+        - query: str - The query value.
+
+    Returns:
+        - return bool - The return value.
+    """
     text = _phrase_normalize(query)
-    return any(
-        _contains_phrase(text, phrase)
-        for phrase in (
-            "price",
-            "prices",
-            "with price",
-            "with prices",
-            "how much",
-            "cost",
-            "costs",
+    return (
+        any(
+            _contains_phrase(text, phrase)
+            for phrase in (
+                "price",
+                "prices",
+                "with price",
+                "with prices",
+                "how much",
+                "cost",
+                "costs",
+            )
         )
-    ) and extract_price_limit(query) is None
+        and extract_price_limit(query) is None
+    )
 
 
 def _query_mentions_menu_scope(query: str) -> bool:
+    """Handle query mentions menu scope.
+
+    Args:
+        - query: str - The query value.
+
+    Returns:
+        - return bool - The return value.
+    """
     text = _phrase_normalize(query)
     index = build_menu_index()
     candidates: set[str] = set(index.top_level_categories)
@@ -1078,6 +1514,14 @@ def _query_mentions_menu_scope(query: str) -> bool:
 
 
 def is_context_dependent_price_request(query: str) -> bool:
+    """Return whether context dependent price request.
+
+    Args:
+        - query: str - The query value.
+
+    Returns:
+        - return bool - The return value.
+    """
     if not is_price_list_request(query):
         return False
     return not _query_mentions_menu_scope(query)
@@ -1089,6 +1533,16 @@ def filter_price_items(
     query: str = "",
     scope: str | None = None,
 ) -> tuple[MenuPriceItem, ...]:
+    """Handle filter price items.
+
+    Args:
+        - max_price: int - The max price value.
+        - query: str - The query value.
+        - scope: str | None - The scope value.
+
+    Returns:
+        - return tuple[MenuPriceItem, ...] - The return value.
+    """
     price_items = build_menu_price_index()
     resolved_scope = scope or _price_scope_from_query(query)
 
@@ -1122,7 +1576,18 @@ def filter_price_items(
     return tuple(matches)
 
 
-def _price_items_for_scope(query: str, scope: str | None = None) -> tuple[MenuPriceItem, ...]:
+def _price_items_for_scope(
+    query: str, scope: str | None = None
+) -> tuple[MenuPriceItem, ...]:
+    """Handle price items for scope.
+
+    Args:
+        - query: str - The query value.
+        - scope: str | None - The scope value.
+
+    Returns:
+        - return tuple[MenuPriceItem, ...] - The return value.
+    """
     price_items = build_menu_price_index()
     resolved_scope = scope or _price_scope_from_query(query)
 
@@ -1143,7 +1608,8 @@ def _price_items_for_scope(query: str, scope: str | None = None) -> tuple[MenuPr
 
     if section_names:
         return tuple(
-            item for item in price_items
+            item
+            for item in price_items
             if _normalize(item.category) in section_names
             or _normalize(item.category).removesuffix("s") in section_singulars
         )
@@ -1152,10 +1618,28 @@ def _price_items_for_scope(query: str, scope: str | None = None) -> tuple[MenuPr
 
 
 def price_items_for_query(query: str) -> tuple[MenuPriceItem, ...]:
-    return tuple(sorted(_price_items_for_scope(query), key=lambda item: (item.price, item.name)))
+    """Handle price items for query.
+
+    Args:
+        - query: str - The query value.
+
+    Returns:
+        - return tuple[MenuPriceItem, ...] - The return value.
+    """
+    return tuple(
+        sorted(_price_items_for_scope(query), key=lambda item: (item.price, item.name))
+    )
 
 
 def format_price_list_query(query: str) -> str:
+    """Format the price list query.
+
+    Args:
+        - query: str - The query value.
+
+    Returns:
+        - return str - The return value.
+    """
     scope = _price_scope_from_query(query)
     items = price_items_for_query(query)
     if not items:
@@ -1175,6 +1659,15 @@ def format_price_list_query(query: str) -> str:
 
 
 def format_price_filter_query(query: str, *, max_price: int | None = None) -> str:
+    """Format the price filter query.
+
+    Args:
+        - query: str - The query value.
+        - max_price: int | None - The max price value.
+
+    Returns:
+        - return str - The return value.
+    """
     limit = max_price if max_price is not None else extract_price_limit(query)
     if limit is None:
         return "I need a price limit to filter the menu, like 'items under 200'."
@@ -1184,7 +1677,9 @@ def format_price_filter_query(query: str, *, max_price: int | None = None) -> st
     scope_text = f" {scope}" if scope else ""
 
     if not matches:
-        scoped_items = sorted(_price_items_for_scope(query), key=lambda item: item.price)
+        scoped_items = sorted(
+            _price_items_for_scope(query), key=lambda item: item.price
+        )
         if scoped_items:
             cheapest = scoped_items[0]
             return (

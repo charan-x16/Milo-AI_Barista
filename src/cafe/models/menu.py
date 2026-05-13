@@ -1,3 +1,5 @@
+"""Cafe models menu module."""
+
 from pydantic import BaseModel, Field
 
 

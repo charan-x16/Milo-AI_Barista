@@ -1,1 +1,1 @@
-
+"""Cafe agents specialists module."""

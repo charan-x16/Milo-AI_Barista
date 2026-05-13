@@ -1,10 +1,11 @@
+"""Cafe models order module."""
+
 from datetime import datetime, timezone
 from typing import Literal
 
 from pydantic import BaseModel, Field
 
 from cafe.models.cart import CartItem
-
 
 OrderStatus = Literal[
     "pending",

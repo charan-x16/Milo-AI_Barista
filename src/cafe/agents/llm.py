@@ -11,7 +11,6 @@ from agentscope.model import (
 from cafe.config import Settings, get_settings
 from cafe.core.observability import ObservedChatModel
 
-
 _PROVIDER_ALIASES = {
     "google": "gemini",
     "google-gemini": "gemini",
@@ -26,16 +25,41 @@ _OPENAI_COMPATIBLE_BASE_URLS = {
 
 
 def normalized_provider(settings: Settings | None = None) -> str:
+    """Handle normalized provider.
+
+    Args:
+        - settings: Settings | None - The settings value.
+
+    Returns:
+        - return str - The return value.
+    """
     s = settings or get_settings()
     provider = s.llm_provider.strip().lower()
     return _PROVIDER_ALIASES.get(provider, provider)
 
 
 def configured_model_name(settings: Settings | None = None) -> str:
+    """Handle configured model name.
+
+    Args:
+        - settings: Settings | None - The settings value.
+
+    Returns:
+        - return str - The return value.
+    """
     return (settings or get_settings()).openai_model
 
 
 def _require_api_key(settings: Settings, provider: str) -> str:
+    """Handle require api key.
+
+    Args:
+        - settings: Settings - The settings value.
+        - provider: str - The provider value.
+
+    Returns:
+        - return str - The return value.
+    """
     if not settings.openai_api_key:
         raise RuntimeError(
             f"LLM_API_KEY not set for provider '{provider}'. "
@@ -49,7 +73,15 @@ def make_chat_model(
     *,
     agent_name: str = "unknown_agent",
 ):
-    """Create the chat model configured by LLM_PROVIDER/LLM_MODEL/LLM_API_KEY."""
+    """Create the chat model configured by LLM_PROVIDER/LLM_MODEL/LLM_API_KEY.
+
+    Args:
+        - settings: Settings | None - The settings value.
+        - agent_name: str - The agent name value.
+
+    Returns:
+        - return Any - The return value.
+    """
 
     s = settings or get_settings()
     provider = normalized_provider(s)
@@ -110,4 +142,6 @@ def make_chat_model(
         )
 
     supported = "openai, deepseek, groq, openrouter, anthropic, google/gemini, ollama, dashscope"
-    raise RuntimeError(f"Unsupported LLM_PROVIDER '{s.llm_provider}'. Supported providers: {supported}.")
+    raise RuntimeError(
+        f"Unsupported LLM_PROVIDER '{s.llm_provider}'. Supported providers: {supported}."
+    )

@@ -1,3 +1,5 @@
+"""Tests test menu index service module."""
+
 from pathlib import Path
 
 from cafe.services.menu_index_service import (
@@ -14,17 +16,29 @@ from cafe.services.menu_index_service import (
 
 
 def test_menu_index_parses_sections_and_items():
+    """Verify menu index parses sections and items.
+
+    Returns:
+        - return None - The return value.
+    """
     index = build_menu_index()
 
     assert "Beverages" in index.top_level_categories
     assert "Food" in index.top_level_categories
     assert "Mocktails" in index.flat_category_names
 
-    mocktails = next(section for section in index.sections if section.name == "Mocktails")
+    mocktails = next(
+        section for section in index.sections if section.name == "Mocktails"
+    )
     assert "Virgin Mojito" in mocktails.items
 
 
 def test_menu_index_parses_browse_aliases_from_document():
+    """Verify menu index parses browse aliases from document.
+
+    Returns:
+        - return None - The return value.
+    """
     index = build_menu_index()
 
     assert index.aliases["drinks"] == ("Beverages",)
@@ -37,6 +51,11 @@ def test_menu_index_parses_browse_aliases_from_document():
 
 
 def test_menu_index_treats_markdown_subgroups_as_groups_not_items():
+    """Verify menu index treats markdown subgroups as groups not items.
+
+    Returns:
+        - return None - The return value.
+    """
     index = build_menu_index()
 
     pizzas = next(section for section in index.sections if section.name == "Pizzas")
@@ -47,6 +66,11 @@ def test_menu_index_treats_markdown_subgroups_as_groups_not_items():
 
 
 def test_menu_sections_default_to_browsable_index():
+    """Verify menu sections default to browsable index.
+
+    Returns:
+        - return None - The return value.
+    """
     text = format_menu_categories()
 
     assert "Here are the menu sections:" in text
@@ -56,6 +80,11 @@ def test_menu_sections_default_to_browsable_index():
 
 
 def test_menu_browse_query_ignores_full_menu_override_without_explicit_item_request():
+    """Verify menu browse query ignores full menu override without explicit item request.
+
+    Returns:
+        - return None - The return value.
+    """
     text = format_menu_browse_query("show the menu", include_items=True)
 
     assert "Here are the menu sections:" in text
@@ -64,6 +93,11 @@ def test_menu_browse_query_ignores_full_menu_override_without_explicit_item_requ
 
 
 def test_menu_section_items_resolves_exact_section():
+    """Verify menu section items resolves exact section.
+
+    Returns:
+        - return None - The return value.
+    """
     text = format_menu_section_items("Mocktails")
 
     assert "Here are the items under Mocktails:" in text
@@ -72,6 +106,11 @@ def test_menu_section_items_resolves_exact_section():
 
 
 def test_menu_section_items_resolves_coffee_group():
+    """Verify menu section items resolves coffee group.
+
+    Returns:
+        - return None - The return value.
+    """
     sections = resolve_sections("coffee")
     section_names = {section.name for section in sections}
 
@@ -79,6 +118,11 @@ def test_menu_section_items_resolves_coffee_group():
 
 
 def test_menu_browse_query_routes_named_section_to_items():
+    """Verify menu browse query routes named section to items.
+
+    Returns:
+        - return None - The return value.
+    """
     text = format_menu_browse_query("show me the coffees")
 
     assert "Here are the items under Coffees:" in text
@@ -87,6 +131,11 @@ def test_menu_browse_query_routes_named_section_to_items():
 
 
 def test_menu_browse_query_routes_singular_coffee_to_coffees_section():
+    """Verify menu browse query routes singular coffee to coffees section.
+
+    Returns:
+        - return None - The return value.
+    """
     text = format_menu_browse_query("show me the coffee")
 
     assert "Here are the items under Coffees:" in text
@@ -97,6 +146,11 @@ def test_menu_browse_query_routes_singular_coffee_to_coffees_section():
 
 
 def test_menu_browse_query_routes_singular_section_to_items():
+    """Verify menu browse query routes singular section to items.
+
+    Returns:
+        - return None - The return value.
+    """
     text = format_menu_browse_query("show pizza options")
 
     assert "Here are the items under Pizzas:" in text
@@ -105,6 +159,11 @@ def test_menu_browse_query_routes_singular_section_to_items():
 
 
 def test_menu_browse_query_routes_coffee_options_to_group_items():
+    """Verify menu browse query routes coffee options to group items.
+
+    Returns:
+        - return None - The return value.
+    """
     text = format_menu_browse_query("show all coffee options")
 
     assert "Absolutely. Here are the matching sections for coffee options:" in text
@@ -114,6 +173,11 @@ def test_menu_browse_query_routes_coffee_options_to_group_items():
 
 
 def test_menu_browse_query_routes_cold_beverages_to_cold_sections():
+    """Verify menu browse query routes cold beverages to cold sections.
+
+    Returns:
+        - return None - The return value.
+    """
     text = format_menu_browse_query("show me the cold beverages")
 
     assert "Absolutely. Here are the matching sections for cold beverages:" in text
@@ -128,6 +192,11 @@ def test_menu_browse_query_routes_cold_beverages_to_cold_sections():
 
 
 def test_menu_browse_query_routes_cool_drinks_to_cold_sections():
+    """Verify menu browse query routes cool drinks to cold sections.
+
+    Returns:
+        - return None - The return value.
+    """
     text = format_menu_browse_query("show me the cool drinks")
 
     assert "Absolutely. Here are the matching sections for cool drinks:" in text
@@ -142,6 +211,11 @@ def test_menu_browse_query_routes_cool_drinks_to_cold_sections():
 
 
 def test_search_menu_item_matches_finds_dessert_style_items():
+    """Verify search menu item matches finds dessert style items.
+
+    Returns:
+        - return None - The return value.
+    """
     matches = search_menu_item_matches("any desserts", max_results=4)
     names = {item.name for item in matches}
 
@@ -151,6 +225,11 @@ def test_search_menu_item_matches_finds_dessert_style_items():
 
 
 def test_search_menu_item_matches_uses_data_layer_match_aliases():
+    """Verify search menu item matches uses data layer match aliases.
+
+    Returns:
+        - return None - The return value.
+    """
     matches = search_menu_item_matches("after food", max_results=4)
     names = {item.name for item in matches}
     text = format_menu_item_matches("after food", max_results=4)
@@ -161,6 +240,14 @@ def test_search_menu_item_matches_uses_data_layer_match_aliases():
 
 
 def test_search_menu_item_match_aliases_adapt_to_menu_document(monkeypatch):
+    """Verify search menu item match aliases adapt to menu document.
+
+    Args:
+        - monkeypatch: Any - The monkeypatch value.
+
+    Returns:
+        - return Any - The return value.
+    """
     menu_text = "\n".join(
         [
             "# Custom Menu",
@@ -177,6 +264,16 @@ def test_search_menu_item_match_aliases_adapt_to_menu_document(monkeypatch):
     original_read_text = Path.read_text
 
     def fake_read_text(path: Path, *args, **kwargs):
+        """Verify fake read text.
+
+        Args:
+            - path: Path - The path value.
+            - args: Any - The args value.
+            - kwargs: Any - The kwargs value.
+
+        Returns:
+            - return Any - The return value.
+        """
         if str(path) == "custom_alias_menu.md":
             return menu_text
         return original_read_text(path, *args, **kwargs)
@@ -193,6 +290,11 @@ def test_search_menu_item_match_aliases_adapt_to_menu_document(monkeypatch):
 
 
 def test_format_menu_item_matches_does_not_show_menu_overview_for_desserts():
+    """Verify format menu item matches does not show menu overview for desserts.
+
+    Returns:
+        - return None - The return value.
+    """
     text = format_menu_item_matches("any desserts", max_results=4)
 
     assert "dedicated Desserts section" in text
@@ -201,12 +303,22 @@ def test_format_menu_item_matches_does_not_show_menu_overview_for_desserts():
 
 
 def test_menu_item_matches_rejects_noisy_nonexistent_category():
+    """Verify menu item matches rejects noisy nonexistent category.
+
+    Returns:
+        - return None - The return value.
+    """
     matches = search_menu_item_matches("show unicorn snacks", max_results=6)
 
     assert matches == ()
 
 
 def test_menu_item_matches_filters_preference_inside_category_scope():
+    """Verify menu item matches filters preference inside category scope.
+
+    Returns:
+        - return None - The return value.
+    """
     browse = format_menu_browse_query("sweet cold drinks")
     matches = search_menu_item_matches("sweet cold drinks", max_results=6)
     names = {item.name for item in matches}
@@ -218,6 +330,11 @@ def test_menu_item_matches_filters_preference_inside_category_scope():
 
 
 def test_menu_browse_query_handles_multi_category_request():
+    """Verify menu browse query handles multi category request.
+
+    Returns:
+        - return None - The return value.
+    """
     text = format_menu_browse_query("coffee and mocktails")
 
     assert "matching sections for coffee and mocktails" in text
@@ -227,19 +344,33 @@ def test_menu_browse_query_handles_multi_category_request():
 
 
 def test_menu_item_matches_are_deterministic_for_same_input():
-    first = [item.as_dict() for item in search_menu_item_matches("something sweet", max_results=5)]
-    second = [item.as_dict() for item in search_menu_item_matches("something sweet", max_results=5)]
+    """Verify menu item matches are deterministic for same input.
+
+    Returns:
+        - return None - The return value.
+    """
+    first = [
+        item.as_dict()
+        for item in search_menu_item_matches("something sweet", max_results=5)
+    ]
+    second = [
+        item.as_dict()
+        for item in search_menu_item_matches("something sweet", max_results=5)
+    ]
 
     assert first == second
 
 
 def test_recommend_menu_items_are_data_driven_and_deterministic():
+    """Verify recommend menu items are data driven and deterministic.
+
+    Returns:
+        - return None - The return value.
+    """
     first = [item.as_dict() for item in recommend_menu_items(max_results=5)]
     second = [item.as_dict() for item in recommend_menu_items(max_results=5)]
     menu_names = {
-        item
-        for section in build_menu_index().sections
-        for item in section.items
+        item for section in build_menu_index().sections for item in section.items
     }
 
     assert first == second
@@ -249,6 +380,14 @@ def test_recommend_menu_items_are_data_driven_and_deterministic():
 
 
 def test_recommend_menu_items_adapts_to_menu_document(monkeypatch):
+    """Verify recommend menu items adapts to menu document.
+
+    Args:
+        - monkeypatch: Any - The monkeypatch value.
+
+    Returns:
+        - return Any - The return value.
+    """
     menu_text = "\n".join(
         [
             "# Custom Menu",
@@ -275,6 +414,16 @@ def test_recommend_menu_items_adapts_to_menu_document(monkeypatch):
     original_read_text = Path.read_text
 
     def fake_read_text(path: Path, *args, **kwargs):
+        """Verify fake read text.
+
+        Args:
+            - path: Path - The path value.
+            - args: Any - The args value.
+            - kwargs: Any - The kwargs value.
+
+        Returns:
+            - return Any - The return value.
+        """
         if str(path) == "custom_menu.md":
             return menu_text
         return original_read_text(path, *args, **kwargs)
@@ -288,6 +437,11 @@ def test_recommend_menu_items_adapts_to_menu_document(monkeypatch):
 
 
 def test_format_menu_recommendations_has_concrete_items_without_generic_prompt():
+    """Verify format menu recommendations has concrete items without generic prompt.
+
+    Returns:
+        - return None - The return value.
+    """
     text = format_menu_recommendations(max_results=5)
 
     assert "Representative picks from the current menu:" in text

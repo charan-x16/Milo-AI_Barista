@@ -1,1 +1,1 @@
-
+"""Cafe models module."""

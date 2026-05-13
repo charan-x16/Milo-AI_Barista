@@ -1,3 +1,5 @@
+"""Cafe api schemas module."""
+
 from pydantic import BaseModel, Field
 
 

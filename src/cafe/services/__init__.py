@@ -1,1 +1,1 @@
-
+"""Cafe services module."""

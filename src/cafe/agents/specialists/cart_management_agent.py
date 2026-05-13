@@ -13,12 +13,16 @@ from cafe.agents.prompts import CART_MANAGEMENT_PROMPT
 from cafe.config import get_settings
 from cafe.tools.cart_tools import add_to_cart, clear_cart, remove_from_cart, view_cart
 
-
 _SKILL_DIR = Path(__file__).resolve().parents[2] / "skills" / "cart_etiquette"
 
 
 @lru_cache(maxsize=1)
 def _make_toolkit() -> Toolkit:
+    """Handle make toolkit.
+
+    Returns:
+        - return Toolkit - The return value.
+    """
     tk = Toolkit()
     tk.register_tool_function(add_to_cart)
     tk.register_tool_function(remove_from_cart)
@@ -30,6 +34,11 @@ def _make_toolkit() -> Toolkit:
 
 
 def make_cart_management_agent() -> ReActAgent:
+    """Handle make cart management agent.
+
+    Returns:
+        - return ReActAgent - The return value.
+    """
     s = get_settings()
     return ReActAgent(
         name="CartManagementAgent",
@@ -38,5 +47,5 @@ def make_cart_management_agent() -> ReActAgent:
         formatter=make_multi_agent_formatter(s),
         toolkit=_make_toolkit(),
         memory=InMemoryMemory(),
-        max_iters=6,
+        max_iters=s.specialist_max_iters,
     )

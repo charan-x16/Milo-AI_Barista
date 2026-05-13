@@ -17,7 +17,6 @@ from functools import wraps
 from inspect import isawaitable
 from typing import Any, Callable
 
-
 log = logging.getLogger("cafe.observability")
 
 _CURRENT_OBSERVER: ContextVar["TurnObserver | None"] = ContextVar(
@@ -36,10 +35,26 @@ class ObservabilitySpan:
     status: str = "complete"
 
     def finish(self, status: str = "complete") -> None:
+        """Handle finish.
+
+        Args:
+            - status: str - The status value.
+
+        Returns:
+            - return None - The return value.
+        """
         self.status = status
         self.latency_ms = round((time.perf_counter() - self.started_at) * 1000, 1)
 
     def update(self, **metadata: Any) -> None:
+        """Handle update.
+
+        Args:
+            - metadata: Any - The metadata value.
+
+        Returns:
+            - return None - The return value.
+        """
         self.metadata.update({k: v for k, v in metadata.items() if v is not None})
 
 
@@ -47,6 +62,16 @@ class TurnObserver:
     """Collects all timings/counters for one chat turn."""
 
     def __init__(self, *, session_id: str, user_id: str, user_text: str) -> None:
+        """Initialize the instance.
+
+        Args:
+            - session_id: str - The session id value.
+            - user_id: str - The user id value.
+            - user_text: str - The user text value.
+
+        Returns:
+            - return None - The return value.
+        """
         self.request_id = uuid.uuid4().hex[:12]
         self.session_id = session_id
         self.user_id = user_id
@@ -67,6 +92,16 @@ class TurnObserver:
         name: str,
         metadata: dict[str, Any] | None = None,
     ):
+        """Handle span.
+
+        Args:
+            - category: str - The category value.
+            - name: str - The name value.
+            - metadata: dict[str, Any] | None - The metadata value.
+
+        Returns:
+            - return None - The return value.
+        """
         span = ObservabilitySpan(
             category=category,
             name=name,
@@ -93,6 +128,19 @@ class TurnObserver:
         fallback_path: str | None = None,
         error: str | None = None,
     ) -> None:
+        """Set the result.
+
+        Args:
+            - status: str - The status value.
+            - reply_source: str | None - The reply source value.
+            - tool_calls: list[dict[str, Any]] | None - The tool calls value.
+            - intent: str | None - The intent value.
+            - fallback_path: str | None - The fallback path value.
+            - error: str | None - The error value.
+
+        Returns:
+            - return None - The return value.
+        """
         self.status = status
         self.reply_source = reply_source
         self.tool_calls = tool_calls or []
@@ -101,6 +149,11 @@ class TurnObserver:
         self.error = error
 
     def summary(self) -> dict[str, Any]:
+        """Handle summary.
+
+        Returns:
+            - return dict[str, Any] - The return value.
+        """
         counters = {
             "llm_calls": self._count("llm"),
             "tool_calls": self._count("tool"),
@@ -126,12 +179,30 @@ class TurnObserver:
         }
 
     def log_summary(self) -> None:
+        """Handle log summary.
+
+        Returns:
+            - return None - The return value.
+        """
         log.info("chat_turn_observability %s", json.dumps(self.summary(), default=str))
 
     def _count(self, category: str) -> int:
+        """Handle count.
+
+        Args:
+            - category: str - The category value.
+
+        Returns:
+            - return int - The return value.
+        """
         return sum(1 for span in self.spans if span.category == category)
 
     def _latency_map(self) -> dict[str, float]:
+        """Handle latency map.
+
+        Returns:
+            - return dict[str, float] - The return value.
+        """
         counts: dict[str, int] = {}
         latencies: dict[str, float] = {}
         for span in self.spans:
@@ -141,6 +212,11 @@ class TurnObserver:
         return latencies
 
     def _average_latency_by_category(self) -> dict[str, float]:
+        """Handle average latency by category.
+
+        Returns:
+            - return dict[str, float] - The return value.
+        """
         grouped: dict[str, list[float]] = {}
         for span in self.spans:
             grouped.setdefault(span.category, []).append(span.latency_ms)
@@ -151,6 +227,11 @@ class TurnObserver:
         }
 
     def _token_usage(self) -> dict[str, Any]:
+        """Handle token usage.
+
+        Returns:
+            - return dict[str, Any] - The return value.
+        """
         input_tokens = 0
         output_tokens = 0
         calls: list[dict[str, Any]] = []
@@ -174,6 +255,11 @@ class TurnObserver:
         }
 
     def _infer_intent(self) -> str:
+        """Handle infer intent.
+
+        Returns:
+            - return str - The return value.
+        """
         if self.intent:
             return self.intent
         tool_names = [call.get("name") for call in self.tool_calls]
@@ -188,6 +274,11 @@ class TurnObserver:
         return "orchestrator_direct"
 
     def _fallback_path_taken(self) -> str:
+        """Handle fallback path taken.
+
+        Returns:
+            - return str - The return value.
+        """
         if self.fallback_path:
             return self.fallback_path
         specialists = [
@@ -204,21 +295,57 @@ class ObservedChatModel:
     """Proxy that records one span for each model API invocation."""
 
     def __init__(self, wrapped: Any, *, agent_name: str) -> None:
+        """Initialize the instance.
+
+        Args:
+            - wrapped: Any - The wrapped value.
+            - agent_name: str - The agent name value.
+
+        Returns:
+            - return None - The return value.
+        """
         self._wrapped = wrapped
         self.agent_name = agent_name
 
     def __getattr__(self, name: str) -> Any:
+        """Handle getattr.
+
+        Args:
+            - name: str - The name value.
+
+        Returns:
+            - return Any - The return value.
+        """
         return getattr(self._wrapped, name)
 
     @property
     def model_name(self) -> str:
+        """Handle model name.
+
+        Returns:
+            - return str - The return value.
+        """
         return self._wrapped.model_name
 
     @property
     def stream(self) -> bool:
+        """Handle stream.
+
+        Returns:
+            - return bool - The return value.
+        """
         return self._wrapped.stream
 
     async def __call__(self, *args: Any, **kwargs: Any) -> Any:
+        """Handle call.
+
+        Args:
+            - args: Any - The args value.
+            - kwargs: Any - The kwargs value.
+
+        Returns:
+            - return Any - The return value.
+        """
         observer = current_observer()
         if observer is None:
             return await self._wrapped(*args, **kwargs)
@@ -236,14 +363,35 @@ class ObservedChatModel:
 
 
 def current_observer() -> TurnObserver | None:
+    """Handle current observer.
+
+    Returns:
+        - return TurnObserver | None - The return value.
+    """
     return _CURRENT_OBSERVER.get()
 
 
 def set_current_observer(observer: TurnObserver) -> Token:
+    """Set the current observer.
+
+    Args:
+        - observer: TurnObserver - The observer value.
+
+    Returns:
+        - return Token - The return value.
+    """
     return _CURRENT_OBSERVER.set(observer)
 
 
 def reset_current_observer(token: Token) -> None:
+    """Reset the current observer.
+
+    Args:
+        - token: Token - The token value.
+
+    Returns:
+        - return None - The return value.
+    """
     _CURRENT_OBSERVER.reset(token)
 
 
@@ -252,6 +400,16 @@ def observed_span(
     name: str,
     metadata: dict[str, Any] | None = None,
 ):
+    """Handle observed span.
+
+    Args:
+        - category: str - The category value.
+        - name: str - The name value.
+        - metadata: dict[str, Any] | None - The metadata value.
+
+    Returns:
+        - return Any - The return value.
+    """
     observer = current_observer()
     if observer is None:
         return _null_span()
@@ -259,13 +417,37 @@ def observed_span(
 
 
 def observe_tool(name: str | None = None) -> Callable:
-    """Decorator for async/sync tool functions."""
+    """Decorator for async/sync tool functions.
+
+    Args:
+        - name: str | None - The name value.
+
+    Returns:
+        - return Callable - The return value.
+    """
 
     def decorator(func: Callable) -> Callable:
+        """Handle decorator.
+
+        Args:
+            - func: Callable - The func value.
+
+        Returns:
+            - return Callable - The return value.
+        """
         span_name = name or func.__name__
 
         @wraps(func)
         async def async_wrapper(*args: Any, **kwargs: Any) -> Any:
+            """Handle async wrapper.
+
+            Args:
+                - args: Any - The args value.
+                - kwargs: Any - The kwargs value.
+
+            Returns:
+                - return Any - The return value.
+            """
             with observed_span("tool", f"tool.{span_name}"):
                 result = func(*args, **kwargs)
                 if isawaitable(result):
@@ -279,11 +461,25 @@ def observe_tool(name: str | None = None) -> Callable:
 
 @contextmanager
 def _null_span():
+    """Handle null span.
+
+    Returns:
+        - return None - The return value.
+    """
     span = ObservabilitySpan("noop", "noop", time.perf_counter())
     yield span
 
 
 def _record_usage(span: ObservabilitySpan, response: Any) -> None:
+    """Handle record usage.
+
+    Args:
+        - span: ObservabilitySpan - The span value.
+        - response: Any - The response value.
+
+    Returns:
+        - return None - The return value.
+    """
     usage = getattr(response, "usage", None)
     if usage is None:
         return
@@ -300,11 +496,14 @@ def _record_usage(span: ObservabilitySpan, response: Any) -> None:
 
 
 def _safe_key(value: str) -> str:
+    """Handle safe key.
+
+    Args:
+        - value: str - The value value.
+
+    Returns:
+        - return str - The return value.
+    """
     return (
-        str(value)
-        .strip()
-        .replace(" ", "_")
-        .replace("-", "_")
-        .replace(".", "_")
-        .lower()
+        str(value).strip().replace(" ", "_").replace("-", "_").replace(".", "_").lower()
     )

@@ -13,12 +13,16 @@ from cafe.agents.prompts import CUSTOMER_SUPPORT_PROMPT
 from cafe.config import get_settings
 from cafe.tools.support_tools import search_support_knowledge
 
-
 _SKILL_DIR = Path(__file__).resolve().parents[2] / "skills" / "support_playbook"
 
 
 @lru_cache(maxsize=1)
 def _make_toolkit() -> Toolkit:
+    """Handle make toolkit.
+
+    Returns:
+        - return Toolkit - The return value.
+    """
     tk = Toolkit()
     tk.register_tool_function(search_support_knowledge)
     tk.register_tool_function(view_text_file)
@@ -27,6 +31,11 @@ def _make_toolkit() -> Toolkit:
 
 
 def make_customer_support_agent() -> ReActAgent:
+    """Handle make customer support agent.
+
+    Returns:
+        - return ReActAgent - The return value.
+    """
     s = get_settings()
     return ReActAgent(
         name="CustomerSupportAgent",
@@ -35,5 +44,5 @@ def make_customer_support_agent() -> ReActAgent:
         formatter=make_multi_agent_formatter(s),
         toolkit=_make_toolkit(),
         memory=InMemoryMemory(),
-        max_iters=6,
+        max_iters=s.specialist_max_iters,
     )

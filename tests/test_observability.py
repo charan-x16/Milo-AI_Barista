@@ -1,3 +1,5 @@
+"""Tests test observability module."""
+
 from types import SimpleNamespace
 
 import pytest
@@ -13,6 +15,12 @@ from cafe.core.observability import (
 
 @pytest.mark.asyncio
 async def test_observed_chat_model_records_llm_tokens():
+    """Verify observed chat model records llm tokens.
+
+    Returns:
+        - return Any - The return value.
+    """
+
     class FakeUsage:
         input_tokens = 12
         output_tokens = 7
@@ -23,6 +31,15 @@ async def test_observed_chat_model_records_llm_tokens():
         stream = False
 
         async def __call__(self, *args, **kwargs):
+            """Verify call.
+
+            Args:
+                - args: Any - The args value.
+                - kwargs: Any - The kwargs value.
+
+            Returns:
+                - return Any - The return value.
+            """
             return SimpleNamespace(usage=FakeUsage())
 
     observer = TurnObserver(session_id="s1", user_id="u1", user_text="hello")
@@ -45,8 +62,19 @@ async def test_observed_chat_model_records_llm_tokens():
 
 @pytest.mark.asyncio
 async def test_observe_tool_records_tool_latency():
+    """Verify observe tool records tool latency.
+
+    Returns:
+        - return Any - The return value.
+    """
+
     @observe_tool("demo_tool")
     async def demo_tool():
+        """Verify demo tool.
+
+        Returns:
+            - return Any - The return value.
+        """
         return "ok"
 
     observer = TurnObserver(session_id="s1", user_id="u1", user_text="hello")

@@ -1,9 +1,20 @@
+"""Cafe services menu service module."""
+
 from cafe.core.validator import ValidationError
 from cafe.models.menu import MenuItem
 
 
 def search_menu(store, query: str, max_results: int = 5) -> list[MenuItem]:
-    """Case-insensitive substring match across name, category, tags."""
+    """Case-insensitive substring match across name, category, tags.
+
+    Args:
+        - store: Any - The store value.
+        - query: str - The query value.
+        - max_results: int - The max results value.
+
+    Returns:
+        - return list[MenuItem] - The return value.
+    """
     normalized_query = query.casefold()
     results: list[MenuItem] = []
 
@@ -18,7 +29,15 @@ def search_menu(store, query: str, max_results: int = 5) -> list[MenuItem]:
 
 
 def get_item(store, item_id: str) -> MenuItem:
-    """Raises ValidationError('Unknown menu item: {id}') if missing."""
+    """Raises ValidationError('Unknown menu item: {id}') if missing.
+
+    Args:
+        - store: Any - The store value.
+        - item_id: str - The item id value.
+
+    Returns:
+        - return MenuItem - The return value.
+    """
     try:
         return store.menu[item_id]
     except KeyError as exc:

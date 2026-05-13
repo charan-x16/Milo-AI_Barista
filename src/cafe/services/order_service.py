@@ -1,3 +1,5 @@
+"""Cafe services order service module."""
+
 import secrets
 
 from cafe.core.validator import ValidationError
@@ -6,7 +8,16 @@ from cafe.services.cart_service import clear_cart
 
 
 def place_order(store, session_id: str, max_budget_inr: int | None = None) -> Order:
-    """Validates cart and budget, creates a confirmed order, clears cart, and returns it."""
+    """Validates cart and budget, creates a confirmed order, clears cart, and re...
+
+    Args:
+        - store: Any - The store value.
+        - session_id: str - The session id value.
+        - max_budget_inr: int | None - The max budget inr value.
+
+    Returns:
+        - return Order - The return value.
+    """
     cart = store.get_cart(session_id)
 
     if cart.is_empty():
@@ -28,7 +39,15 @@ def place_order(store, session_id: str, max_budget_inr: int | None = None) -> Or
 
 
 def get_order(store, order_id: str) -> Order:
-    """Raises if order_id unknown."""
+    """Raises if order_id unknown.
+
+    Args:
+        - store: Any - The store value.
+        - order_id: str - The order id value.
+
+    Returns:
+        - return Order - The return value.
+    """
     try:
         return store.orders[order_id]
     except KeyError as exc:
@@ -36,7 +55,15 @@ def get_order(store, order_id: str) -> Order:
 
 
 def cancel_order(store, order_id: str) -> Order:
-    """Only allowed when status in {pending, confirmed}."""
+    """Only allowed when status in {pending, confirmed}.
+
+    Args:
+        - store: Any - The store value.
+        - order_id: str - The order id value.
+
+    Returns:
+        - return Order - The return value.
+    """
     order = get_order(store, order_id)
 
     if order.status not in {"pending", "confirmed"}:

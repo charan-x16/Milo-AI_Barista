@@ -10,8 +10,8 @@ import asyncio
 import json
 import re
 from copy import deepcopy
+from dataclasses import dataclass
 from hashlib import sha256
-from inspect import currentframe
 from pathlib import Path
 from typing import Any
 
@@ -25,6 +25,7 @@ from sqlalchemy import (
     Column,
     DateTime,
     ForeignKey,
+    Index,
     Integer,
     MetaData,
     String,
@@ -37,19 +38,25 @@ from sqlalchemy import (
     select,
     update,
 )
-from sqlalchemy.engine import make_url
-from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
 from sqlalchemy.dialects.postgresql import insert as postgresql_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
+from sqlalchemy.engine import make_url
+from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
 
+from cafe.config import Settings, get_settings
 from cafe.core.observability import observed_span
 from cafe.core.validator import ValidationError
 from cafe.models.cart import Cart
 from cafe.models.menu import MenuItem
 from cafe.models.order import Order
 from cafe.services.menu_index_service import build_menu_item_match_index
-from cafe.config import Settings, get_settings
 
+from .summary_cache import (
+    clear_summary_cache_sync,
+    delete_cached_summary,
+    get_cached_summary,
+    set_cached_summary,
+)
 
 DEFAULT_USER_ID = "anonymous"
 SUMMARY_MARK = "summary"
@@ -59,7 +66,7 @@ COMPRESSED_MARK = "compressed"
 TOOL_RESULT_MAX_CHARS = 2000
 
 _ENGINE: AsyncEngine | None = None
-_SCHEMA_INITIALIZED = False
+_SCHEMA_INITIALIZED: set[str] = set()
 _MENU_CATALOG_INITIALIZED = False
 _ENSURED_CONVERSATIONS: set[tuple[str, str]] = set()
 _STORAGE_INIT_LOCK = asyncio.Lock()
@@ -85,6 +92,8 @@ CONVERSATIONS_TABLE = Table(
     Column("session_id", String(255), nullable=False),
     Column("title", String(255), nullable=True),
     Column("status", String(32), nullable=False, default="active"),
+    Column("last_sequence_no", Integer, nullable=False, default=0),
+    Column("last_compressed_sequence_no", Integer, nullable=False, default=0),
     Column("metadata", JSON, nullable=False, default=dict),
     Column("created_at", DateTime(timezone=True), server_default=func.now()),
     Column("updated_at", DateTime(timezone=True), server_default=func.now()),
@@ -95,7 +104,9 @@ CONVERSATION_MESSAGES_TABLE = Table(
     "conversation_messages",
     APP_MEMORY_METADATA,
     Column("id", String(255), primary_key=True),
-    Column("conversation_id", String(255), ForeignKey("conversations.id"), nullable=False),
+    Column(
+        "conversation_id", String(255), ForeignKey("conversations.id"), nullable=False
+    ),
     Column("sequence_no", Integer, nullable=False),
     Column("role", String(32), nullable=False),
     Column("name", String(255), nullable=False),
@@ -106,6 +117,7 @@ CONVERSATION_MESSAGES_TABLE = Table(
     Column("tool_name", String(255), nullable=True),
     Column("marks", JSON, nullable=False, default=list),
     Column("visible_to_user", Boolean, nullable=False, default=False),
+    Column("is_compressed", Boolean, nullable=False, default=False),
     Column("metadata", JSON, nullable=False, default=dict),
     Column("created_at", DateTime(timezone=True), server_default=func.now()),
     UniqueConstraint(
@@ -115,11 +127,26 @@ CONVERSATION_MESSAGES_TABLE = Table(
     ),
 )
 
+Index(
+    "ix_conversation_messages_visible_sequence",
+    CONVERSATION_MESSAGES_TABLE.c.conversation_id,
+    CONVERSATION_MESSAGES_TABLE.c.visible_to_user,
+    CONVERSATION_MESSAGES_TABLE.c.sequence_no,
+)
+Index(
+    "ix_conversation_messages_compressed_sequence",
+    CONVERSATION_MESSAGES_TABLE.c.conversation_id,
+    CONVERSATION_MESSAGES_TABLE.c.is_compressed,
+    CONVERSATION_MESSAGES_TABLE.c.sequence_no,
+)
+
 CONVERSATION_SUMMARIES_TABLE = Table(
     "conversation_summaries",
     APP_MEMORY_METADATA,
     Column("id", String(255), primary_key=True),
-    Column("conversation_id", String(255), ForeignKey("conversations.id"), nullable=False),
+    Column(
+        "conversation_id", String(255), ForeignKey("conversations.id"), nullable=False
+    ),
     Column("summary", Text, nullable=False),
     Column("summary_version", Integer, nullable=False),
     Column("source_message_start", Integer, nullable=True),
@@ -153,7 +180,9 @@ CARTS_TABLE = Table(
     "carts",
     APP_MEMORY_METADATA,
     Column("id", String(255), primary_key=True),
-    Column("conversation_id", String(255), ForeignKey("conversations.id"), nullable=False),
+    Column(
+        "conversation_id", String(255), ForeignKey("conversations.id"), nullable=False
+    ),
     Column("user_id", String(255), ForeignKey("users.id"), nullable=False),
     Column("session_id", String(255), nullable=False),
     Column("status", String(32), nullable=False, default="active"),
@@ -184,7 +213,9 @@ ORDERS_TABLE = Table(
     "orders",
     APP_MEMORY_METADATA,
     Column("id", String(255), primary_key=True),
-    Column("conversation_id", String(255), ForeignKey("conversations.id"), nullable=False),
+    Column(
+        "conversation_id", String(255), ForeignKey("conversations.id"), nullable=False
+    ),
     Column("user_id", String(255), ForeignKey("users.id"), nullable=False),
     Column("session_id", String(255), nullable=False),
     Column("status", String(32), nullable=False),
@@ -227,6 +258,17 @@ class CafeConversationSummary(BaseModel):
     )
 
 
+@dataclass(frozen=True)
+class SummaryCheckpoint:
+    """A fixed-size memory window that should become the next summary."""
+
+    previous_summary: str
+    messages: tuple[Msg, ...]
+    message_ids: tuple[str, ...]
+    source_message_start: int
+    source_message_end: int
+
+
 SUMMARY_TEMPLATE = (
     "<conversation_summary>"
     "Key user decisions: {key_user_decisions}\n"
@@ -236,43 +278,105 @@ SUMMARY_TEMPLATE = (
 )
 
 COMPRESSION_PROMPT = (
-    "<system-hint>Summarize the older cafe conversation so the assistant can "
-    "continue naturally. Preserve key user decisions, order details, session "
-    "preferences, important facts, unresolved questions, and promises made. "
-    "Keep the recent messages out of the summary because they remain visible."
-    "</system-hint>"
+    "Create the next cumulative short-term memory summary for Milo, the cafe "
+    "assistant. Use the previous summary plus only the new checkpoint messages. "
+    "Preserve key user decisions, preferences, dietary or health constraints, "
+    "important cart/order/menu facts, unresolved questions, and promises made. "
+    "Do not invent facts. Do not include messages outside this checkpoint."
 )
 
 
 def _window_size(settings: Settings) -> int:
+    """Handle window size.
+
+    Args:
+        - settings: Settings - The settings value.
+
+    Returns:
+        - return int - The return value.
+    """
     return min(max(settings.memory_keep_recent_messages, 8), 12)
 
 
 def _storage_session_id(user_id: str, session_id: str) -> str:
+    """Handle storage session id.
+
+    Args:
+        - user_id: str - The user id value.
+        - session_id: str - The session id value.
+
+    Returns:
+        - return str - The return value.
+    """
     return sha256(f"{user_id}\0{session_id}".encode("utf-8")).hexdigest()
 
 
 def _cart_id(conversation_id: str) -> str:
+    """Handle cart id.
+
+    Args:
+        - conversation_id: str - The conversation id value.
+
+    Returns:
+        - return str - The return value.
+    """
     return sha256(f"{conversation_id}:cart".encode("utf-8")).hexdigest()
 
 
 def _menu_item_id(name: str) -> str:
+    """Handle menu item id.
+
+    Args:
+        - name: str - The name value.
+
+    Returns:
+        - return str - The return value.
+    """
     slug = re.sub(r"[^a-z0-9]+", "-", name.casefold()).strip("-")
     return f"menu-{slug}"
 
 
 def _normalized_menu_name(name: str) -> str:
+    """Handle normalized menu name.
+
+    Args:
+        - name: str - The name value.
+
+    Returns:
+        - return str - The return value.
+    """
     return " ".join(re.sub(r"[^a-z0-9]+", " ", name.casefold()).split())
 
 
 def _first_price_inr(price_text: str | None) -> int | None:
+    """Handle first price inr.
+
+    Args:
+        - price_text: str | None - The price text value.
+
+    Returns:
+        - return int | None - The return value.
+    """
     if not price_text:
         return None
     match = re.search(r"\d+", price_text)
     return int(match.group(0)) if match else None
 
 
-def _line_id(parent_id: str, index: int, item_id: str, customizations: list[str]) -> str:
+def _line_id(
+    parent_id: str, index: int, item_id: str, customizations: list[str]
+) -> str:
+    """Handle line id.
+
+    Args:
+        - parent_id: str - The parent id value.
+        - index: int - The index value.
+        - item_id: str - The item id value.
+        - customizations: list[str] - The customizations value.
+
+    Returns:
+        - return str - The return value.
+    """
     key = json.dumps(
         [parent_id, index, item_id, customizations],
         ensure_ascii=False,
@@ -282,6 +386,14 @@ def _line_id(parent_id: str, index: int, item_id: str, customizations: list[str]
 
 
 def _ensure_sqlite_parent(database_url: str) -> None:
+    """Handle ensure sqlite parent.
+
+    Args:
+        - database_url: str - The database url value.
+
+    Returns:
+        - return None - The return value.
+    """
     prefix = "sqlite+aiosqlite:///"
     if not database_url.startswith(prefix):
         return
@@ -297,7 +409,14 @@ def _ensure_sqlite_parent(database_url: str) -> None:
 
 
 def _normalize_async_database_url(database_url: str) -> tuple[str, dict[str, Any]]:
-    """Adapt provider URLs, such as Neon, for SQLAlchemy async drivers."""
+    """Adapt provider URLs, such as Neon, for SQLAlchemy async drivers.
+
+    Args:
+        - database_url: str - The database url value.
+
+    Returns:
+        - return tuple[str, dict[str, Any]] - The return value.
+    """
     url = make_url(database_url)
     if url.drivername != "postgresql+asyncpg":
         return database_url, {}
@@ -317,30 +436,58 @@ def _normalize_async_database_url(database_url: str) -> tuple[str, dict[str, Any
 
 
 def _get_engine(settings: Settings) -> AsyncEngine:
+    """Handle get engine.
+
+    Args:
+        - settings: Settings - The settings value.
+
+    Returns:
+        - return AsyncEngine - The return value.
+    """
     global _ENGINE
     if _ENGINE is None:
         _ensure_sqlite_parent(settings.memory_database_url)
         url, connect_args = _normalize_async_database_url(
             settings.memory_database_url,
         )
-        engine_kwargs: dict[str, Any] = {"pool_pre_ping": True, **connect_args}
-        if url.startswith("postgresql+asyncpg"):
-            engine_kwargs.update(pool_size=5, max_overflow=10, pool_recycle=1800)
+        engine_kwargs: dict[str, Any] = dict(connect_args)
+        if not url.startswith("sqlite+aiosqlite"):
+            engine_kwargs.update(
+                pool_size=settings.memory_db_pool_size,
+                max_overflow=settings.memory_db_max_overflow,
+                pool_timeout=settings.memory_db_pool_timeout,
+                pool_recycle=settings.memory_db_pool_recycle,
+                pool_pre_ping=settings.memory_db_pool_pre_ping,
+            )
         _ENGINE = create_async_engine(url, **engine_kwargs)
     return _ENGINE
 
 
 def _reset_storage_runtime_cache() -> None:
-    """Reset module caches when tests swap databases."""
-    global _ENGINE, _SCHEMA_INITIALIZED, _MENU_CATALOG_INITIALIZED
+    """Reset module caches when tests swap databases.
+
+    Returns:
+        - return None - The return value.
+    """
+    global _ENGINE, _MENU_CATALOG_INITIALIZED
     _ENGINE = None
-    _SCHEMA_INITIALIZED = False
+    _SCHEMA_INITIALIZED.clear()
     _MENU_CATALOG_INITIALIZED = False
     _ENSURED_CONVERSATIONS.clear()
+    clear_summary_cache_sync()
 
 
 def _insert_ignore(table: Table, values: dict[str, Any], dialect_name: str):
-    """Build a cross-dialect insert that ignores duplicate-key conflicts."""
+    """Build a cross-dialect insert that ignores duplicate-key conflicts.
+
+    Args:
+        - table: Table - The table value.
+        - values: dict[str, Any] - The values value.
+        - dialect_name: str - The dialect name value.
+
+    Returns:
+        - return Any - The return value.
+    """
     if dialect_name == "postgresql":
         return postgresql_insert(table).values(**values).on_conflict_do_nothing()
     if dialect_name == "sqlite":
@@ -348,41 +495,98 @@ def _insert_ignore(table: Table, values: dict[str, Any], dialect_name: str):
     return insert(table).values(**values)
 
 
+def _insert_many_ignore(table: Table, rows: list[dict[str, Any]], dialect_name: str):
+    """Build a cross-dialect batch insert that ignores duplicate conflicts.
+
+    Args:
+        - table: Table - The table value.
+        - rows: list[dict[str, Any]] - The row values.
+        - dialect_name: str - The SQL dialect name.
+
+    Returns:
+        - return Any - The insert statement.
+    """
+    if dialect_name == "postgresql":
+        return postgresql_insert(table).values(rows).on_conflict_do_nothing()
+    if dialect_name == "sqlite":
+        return sqlite_insert(table).values(rows).on_conflict_do_nothing()
+    return insert(table).values(rows)
+
+
 async def _ensure_schema(engine: AsyncEngine) -> None:
-    global _SCHEMA_INITIALIZED
-    if _SCHEMA_INITIALIZED:
+    """Handle ensure schema.
+
+    Args:
+        - engine: AsyncEngine - The engine value.
+
+    Returns:
+        - return None - The return value.
+    """
+    schema_key = str(engine.url)
+    if schema_key in _SCHEMA_INITIALIZED:
         return
 
     async with _STORAGE_INIT_LOCK:
-        if _SCHEMA_INITIALIZED:
+        if schema_key in _SCHEMA_INITIALIZED:
             return
 
         with observed_span("sql", "sql.schema_init"):
             async with engine.begin() as conn:
                 await conn.run_sync(APP_MEMORY_METADATA.create_all)
 
-        _SCHEMA_INITIALIZED = True
+        _SCHEMA_INITIALIZED.add(schema_key)
 
 
 async def ensure_storage_ready(settings: Settings | None = None) -> None:
-    """Create app SQL tables once per process, preferably during startup."""
+    """Create app SQL tables once per process, preferably during startup.
+
+    Args:
+        - settings: Settings | None - The settings value.
+
+    Returns:
+        - return None - The return value.
+    """
     settings = settings or get_settings()
     await _ensure_schema(_get_engine(settings))
 
 
 def _block_type(block: Any) -> str | None:
+    """Handle block type.
+
+    Args:
+        - block: Any - The block value.
+
+    Returns:
+        - return str | None - The return value.
+    """
     if isinstance(block, dict):
         return block.get("type")
     return getattr(block, "type", None)
 
 
 def _block_id(block: Any) -> str | None:
+    """Handle block id.
+
+    Args:
+        - block: Any - The block value.
+
+    Returns:
+        - return str | None - The return value.
+    """
     if isinstance(block, dict):
         return block.get("id")
     return getattr(block, "id", None)
 
 
 def _content_text(content: Any) -> str:
+    """Handle content text.
+
+    Args:
+        - content: Any - The content value.
+
+    Returns:
+        - return str - The return value.
+    """
     if isinstance(content, str):
         return content
 
@@ -398,6 +602,15 @@ def _content_text(content: Any) -> str:
 
 
 def _truncate(text: str, limit: int = TOOL_RESULT_MAX_CHARS) -> str:
+    """Handle truncate.
+
+    Args:
+        - text: str - The text value.
+        - limit: int - The limit value.
+
+    Returns:
+        - return str - The return value.
+    """
     text = " ".join(text.split())
     if len(text) <= limit:
         return text
@@ -405,6 +618,14 @@ def _truncate(text: str, limit: int = TOOL_RESULT_MAX_CHARS) -> str:
 
 
 def _summarize_json_payload(payload: dict[str, Any]) -> str:
+    """Handle summarize json payload.
+
+    Args:
+        - payload: dict[str, Any] - The payload value.
+
+    Returns:
+        - return str - The return value.
+    """
     if payload.get("success") is False:
         return f"Tool failed: {payload.get('error') or 'unknown error'}"
 
@@ -460,6 +681,14 @@ def _summarize_json_payload(payload: dict[str, Any]) -> str:
 
 
 def _summarize_tool_output(output: Any) -> str:
+    """Handle summarize tool output.
+
+    Args:
+        - output: Any - The output value.
+
+    Returns:
+        - return str - The return value.
+    """
     text = _content_text(output)
     try:
         parsed = json.loads(text)
@@ -472,7 +701,14 @@ def _summarize_tool_output(output: Any) -> str:
 
 
 def _compact_tool_result_msg(msg: Msg) -> Msg:
-    """Store readable tool-result summaries, not large raw tool payloads."""
+    """Store readable tool-result summaries, not large raw tool payloads.
+
+    Args:
+        - msg: Msg - The msg value.
+
+    Returns:
+        - return Msg - The return value.
+    """
     if not msg.has_content_blocks("tool_result"):
         return msg
 
@@ -509,7 +745,14 @@ def _compact_tool_result_msg(msg: Msg) -> Msg:
 
 
 def _split_mixed_tool_messages(msg: Msg) -> list[Msg]:
-    """Keep tool calls and tool results in separate Msg records."""
+    """Keep tool calls and tool results in separate Msg records.
+
+    Args:
+        - msg: Msg - The msg value.
+
+    Returns:
+        - return list[Msg] - The return value.
+    """
     if not (
         msg.has_content_blocks("tool_use")
         and msg.has_content_blocks("tool_result")
@@ -549,62 +792,51 @@ def _split_mixed_tool_messages(msg: Msg) -> list[Msg]:
     return messages
 
 
-def _called_from_compression() -> bool:
-    frame = currentframe()
-    while frame:
-        if frame.f_code.co_name == "_compress_memory_if_needed":
-            return True
-        frame = frame.f_back
-    return False
+def _missing_tool_pair_ids(rows: list[dict[str, Any]]) -> set[str]:
+    """Return tool ids whose call/result pair is only partially selected.
 
+    Args:
+        - rows: list[dict[str, Any]] - Selected message rows.
 
-def _expand_start_for_tool_pairs(msgs: list[Msg], start: int) -> int:
-    """Move the window start back if it would orphan a tool_result."""
-    while start > 0:
-        selected = msgs[start:]
-        selected_call_ids = {
-            _block_id(block)
-            for msg in selected
-            for block in msg.get_content_blocks("tool_use")
-        }
-        selected_result_ids = {
-            _block_id(block)
-            for msg in selected
-            for block in msg.get_content_blocks("tool_result")
-        }
-        missing_call_ids = selected_result_ids - selected_call_ids - {None}
-        if not missing_call_ids:
-            return start
-
-        moved = False
-        for idx in range(start - 1, -1, -1):
-            call_ids = {
-                _block_id(block)
-                for block in msgs[idx].get_content_blocks("tool_use")
-            }
-            if call_ids & missing_call_ids:
-                start = idx
-                moved = True
-                break
-        if not moved:
-            return start
-    return start
-
-
-def _recent_window(msgs: list[Msg], keep_recent: int) -> list[Msg]:
-    if len(msgs) <= keep_recent:
-        return msgs
-    start = max(0, len(msgs) - keep_recent)
-    return msgs[_expand_start_for_tool_pairs(msgs, start) :]
+    Returns:
+        - return set[str] - Missing tool call ids.
+    """
+    call_ids = {
+        row.get("tool_call_id")
+        for row in rows
+        if TOOL_CALL_MARK in set(row.get("marks") or []) and row.get("tool_call_id")
+    }
+    result_ids = {
+        row.get("tool_call_id")
+        for row in rows
+        if TOOL_RESULT_MARK in set(row.get("marks") or []) and row.get("tool_call_id")
+    }
+    return (call_ids ^ result_ids) - {None}
 
 
 def _tool_name(block: Any) -> str | None:
+    """Handle tool name.
+
+    Args:
+        - block: Any - The block value.
+
+    Returns:
+        - return str | None - The return value.
+    """
     if isinstance(block, dict):
         return block.get("name")
     return getattr(block, "name", None)
 
 
 def _message_type(msg: Msg) -> str:
+    """Handle message type.
+
+    Args:
+        - msg: Msg - The msg value.
+
+    Returns:
+        - return str - The return value.
+    """
     if msg.metadata.get("kind") == SUMMARY_MARK:
         return SUMMARY_MARK
     if msg.has_content_blocks("tool_use"):
@@ -615,6 +847,14 @@ def _message_type(msg: Msg) -> str:
 
 
 def _compact_content(msg: Msg) -> str:
+    """Handle compact content.
+
+    Args:
+        - msg: Msg - The msg value.
+
+    Returns:
+        - return str - The return value.
+    """
     display_text = msg.metadata.get("display_text") or msg.metadata.get("user_text")
     if display_text:
         return _truncate(str(display_text))
@@ -631,18 +871,59 @@ class AppSQLMemory(MemoryBase):
         user_id: str,
         session_id: str,
         keep_recent: int,
+        prompt_scope: str = "conversation",
     ) -> None:
+        """Initialize the instance.
+
+        Args:
+            - engine: AsyncEngine - The engine value.
+            - user_id: str - The user id value.
+            - session_id: str - The session id value.
+            - keep_recent: int - The keep recent value.
+            - prompt_scope: str - Prompt memory scope.
+
+        Returns:
+            - return None - The return value.
+        """
         super().__init__()
         self.engine = engine
         self.user_id = user_id
         self.session_id = session_id
         self.conversation_id = _storage_session_id(user_id, session_id)
         self.keep_recent = keep_recent
+        self.prompt_scope = prompt_scope
         self._summary_hydrated = False
         self._initialized = False
         self._lock = asyncio.Lock()
+        self._capture_turn_messages = False
+        self._turn_messages: list[Msg] = []
+
+    def begin_turn_capture(self) -> None:
+        """Begin capturing messages added during the current agent turn.
+
+        Returns:
+            - return None - This function has no return value.
+        """
+        self._capture_turn_messages = True
+        self._turn_messages = []
+
+    def consume_turn_capture(self) -> list[Msg]:
+        """Return messages captured during the current agent turn.
+
+        Returns:
+            - return list[Msg] - The captured messages.
+        """
+        messages = list(self._turn_messages)
+        self._turn_messages = []
+        self._capture_turn_messages = False
+        return messages
 
     async def _create_table(self) -> None:
+        """Handle create table.
+
+        Returns:
+            - return None - The return value.
+        """
         if self._initialized:
             return
 
@@ -679,6 +960,8 @@ class AppSQLMemory(MemoryBase):
                                 "user_id": self.user_id,
                                 "session_id": self.session_id,
                                 "status": "active",
+                                "last_sequence_no": 0,
+                                "last_compressed_sequence_no": 0,
                                 "metadata": {},
                             },
                             dialect_name,
@@ -689,7 +972,20 @@ class AppSQLMemory(MemoryBase):
             self._initialized = True
 
     async def _hydrate_summary(self) -> None:
+        """Handle hydrate summary.
+
+        Returns:
+            - return None - The return value.
+        """
         if self._summary_hydrated:
+            return
+
+        with observed_span("memory", "memory.summary_cache") as span:
+            cached = await get_cached_summary(self.user_id, self.session_id)
+            span.update(hit=cached.found)
+        if cached.found:
+            self._compressed_summary = cached.summary
+            self._summary_hydrated = True
             return
 
         await self._create_table()
@@ -710,38 +1006,276 @@ class AppSQLMemory(MemoryBase):
 
         self._compressed_summary = row.summary if row else ""
         self._summary_hydrated = True
-
-    async def _next_sequence(self, conn) -> int:
-        max_sequence = await conn.scalar(
-            select(func.max(CONVERSATION_MESSAGES_TABLE.c.sequence_no)).where(
-                CONVERSATION_MESSAGES_TABLE.c.conversation_id == self.conversation_id
-            )
+        await set_cached_summary(
+            self.user_id,
+            self.session_id,
+            self._compressed_summary,
         )
-        return (max_sequence or 0) + 1
 
-    async def _fetch_message_rows(self) -> list[dict[str, Any]]:
+    async def _reserve_sequences(self, conn, count: int) -> int:
+        """Reserve sequence numbers for a batch insert.
+
+        Args:
+            - conn: Any - The conn value.
+            - count: int - Number of sequence numbers to reserve.
+
+        Returns:
+            - return int - The return value.
+        """
+        if count <= 0:
+            return 0
+
+        stmt = select(CONVERSATIONS_TABLE.c.last_sequence_no).where(
+            CONVERSATIONS_TABLE.c.id == self.conversation_id
+        )
+        if conn.dialect.name != "sqlite":
+            stmt = stmt.with_for_update()
+
+        current = await conn.scalar(stmt)
+        if current is None:
+            current = (
+                await conn.scalar(
+                    select(func.max(CONVERSATION_MESSAGES_TABLE.c.sequence_no)).where(
+                        CONVERSATION_MESSAGES_TABLE.c.conversation_id
+                        == self.conversation_id
+                    )
+                )
+                or 0
+            )
+        next_last = int(current or 0) + count
+        await conn.execute(
+            update(CONVERSATIONS_TABLE)
+            .where(CONVERSATIONS_TABLE.c.id == self.conversation_id)
+            .values(last_sequence_no=next_last, updated_at=func.now())
+        )
+        return int(current or 0) + 1
+
+    async def _fetch_message_rows(
+        self,
+        *,
+        only_uncompressed: bool = False,
+        msg_ids: list[str] | None = None,
+    ) -> list[dict[str, Any]]:
+        """Handle fetch message rows.
+
+        Args:
+            - only_uncompressed: bool - Whether to exclude compressed messages.
+            - msg_ids: list[str] | None - Optional message ids to fetch.
+
+        Returns:
+            - return list[dict[str, Any]] - The return value.
+        """
         await self._create_table()
         with observed_span("sql", "sql.fetch_messages") as span:
             async with self.engine.connect() as conn:
-                rows = (
-                    await conn.execute(
-                        select(CONVERSATION_MESSAGES_TABLE)
-                        .where(
-                            CONVERSATION_MESSAGES_TABLE.c.conversation_id
-                            == self.conversation_id
-                        )
-                        .order_by(CONVERSATION_MESSAGES_TABLE.c.sequence_no)
+                stmt = select(CONVERSATION_MESSAGES_TABLE).where(
+                    CONVERSATION_MESSAGES_TABLE.c.conversation_id
+                    == self.conversation_id
+                )
+                if only_uncompressed:
+                    stmt = stmt.where(
+                        CONVERSATION_MESSAGES_TABLE.c.is_compressed.is_(False)
                     )
-                ).mappings().all()
+                if msg_ids is not None:
+                    stmt = stmt.where(CONVERSATION_MESSAGES_TABLE.c.id.in_(msg_ids))
+                stmt = stmt.order_by(CONVERSATION_MESSAGES_TABLE.c.sequence_no)
+                rows = (await conn.execute(stmt)).mappings().all()
             span.update(row_count=len(rows))
         return [dict(row) for row in rows]
 
+    async def _fetch_recent_uncompressed_rows(self) -> list[dict[str, Any]]:
+        """Fetch the recent uncompressed prompt window.
+
+        Returns:
+            - return list[dict[str, Any]] - Recent rows in sequence order.
+        """
+        await self._create_table()
+        with observed_span("sql", "sql.fetch_recent_messages") as span:
+            async with self.engine.connect() as conn:
+                rows = (
+                    (
+                        await conn.execute(
+                            select(CONVERSATION_MESSAGES_TABLE)
+                            .where(
+                                CONVERSATION_MESSAGES_TABLE.c.conversation_id
+                                == self.conversation_id,
+                                CONVERSATION_MESSAGES_TABLE.c.is_compressed.is_(False),
+                            )
+                            .order_by(CONVERSATION_MESSAGES_TABLE.c.sequence_no.desc())
+                            .limit(self.keep_recent)
+                        )
+                    )
+                    .mappings()
+                    .all()
+                )
+                selected = [dict(row) for row in reversed(rows)]
+                missing_ids = _missing_tool_pair_ids(selected)
+                if missing_ids:
+                    pair_rows = (
+                        (
+                            await conn.execute(
+                                select(CONVERSATION_MESSAGES_TABLE).where(
+                                    CONVERSATION_MESSAGES_TABLE.c.conversation_id
+                                    == self.conversation_id,
+                                    CONVERSATION_MESSAGES_TABLE.c.is_compressed.is_(
+                                        False
+                                    ),
+                                    CONVERSATION_MESSAGES_TABLE.c.tool_call_id.in_(
+                                        sorted(missing_ids)
+                                    ),
+                                )
+                            )
+                        )
+                        .mappings()
+                        .all()
+                    )
+                    by_id = {row["id"]: dict(row) for row in selected}
+                    by_id.update({row["id"]: dict(row) for row in pair_rows})
+                    selected = sorted(
+                        by_id.values(),
+                        key=lambda row: row["sequence_no"],
+                    )
+            span.update(row_count=len(selected))
+        return selected
+
+    async def _fetch_sequence_rows(
+        self,
+        *,
+        start_sequence: int,
+        end_sequence: int,
+    ) -> list[dict[str, Any]]:
+        """Fetch message rows inside a sequence range.
+
+        Args:
+            - start_sequence: int - First sequence number to include.
+            - end_sequence: int - Last sequence number to include.
+
+        Returns:
+            - return list[dict[str, Any]] - Rows in sequence order.
+        """
+        await self._create_table()
+        with observed_span("sql", "sql.fetch_summary_checkpoint") as span:
+            async with self.engine.connect() as conn:
+                rows = (
+                    (
+                        await conn.execute(
+                            select(CONVERSATION_MESSAGES_TABLE)
+                            .where(
+                                CONVERSATION_MESSAGES_TABLE.c.conversation_id
+                                == self.conversation_id,
+                                CONVERSATION_MESSAGES_TABLE.c.sequence_no
+                                >= start_sequence,
+                                CONVERSATION_MESSAGES_TABLE.c.sequence_no
+                                <= end_sequence,
+                            )
+                            .order_by(CONVERSATION_MESSAGES_TABLE.c.sequence_no)
+                        )
+                    )
+                    .mappings()
+                    .all()
+                )
+            span.update(row_count=len(rows))
+        return [dict(row) for row in rows]
+
+    async def next_summary_checkpoint(
+        self,
+        checkpoint_size: int,
+    ) -> SummaryCheckpoint | None:
+        """Return the next fixed-size chunk ready for cumulative summary.
+
+        Args:
+            - checkpoint_size: int - Number of new messages per checkpoint.
+
+        Returns:
+            - return SummaryCheckpoint | None - Pending checkpoint, if ready.
+        """
+        checkpoint_size = max(1, checkpoint_size)
+        await self._create_table()
+        await self._hydrate_summary()
+        with observed_span("sql", "sql.summary_checkpoint_state"):
+            async with self.engine.connect() as conn:
+                row = (
+                    await conn.execute(
+                        select(
+                            CONVERSATIONS_TABLE.c.last_sequence_no,
+                            CONVERSATIONS_TABLE.c.last_compressed_sequence_no,
+                        ).where(CONVERSATIONS_TABLE.c.id == self.conversation_id)
+                    )
+                ).first()
+
+        if row is None:
+            return None
+
+        last_sequence = int(row.last_sequence_no or 0)
+        last_summarized = int(row.last_compressed_sequence_no or 0)
+        start_sequence = last_summarized + 1
+        end_sequence = last_summarized + checkpoint_size
+        if last_sequence < end_sequence:
+            return None
+
+        rows = await self._fetch_sequence_rows(
+            start_sequence=start_sequence,
+            end_sequence=end_sequence,
+        )
+        missing_ids = _missing_tool_pair_ids(rows)
+        if missing_ids:
+            with observed_span("sql", "sql.expand_summary_tool_pairs"):
+                async with self.engine.connect() as conn:
+                    pair_rows = (
+                        (
+                            await conn.execute(
+                                select(CONVERSATION_MESSAGES_TABLE).where(
+                                    CONVERSATION_MESSAGES_TABLE.c.conversation_id
+                                    == self.conversation_id,
+                                    CONVERSATION_MESSAGES_TABLE.c.tool_call_id.in_(
+                                        sorted(missing_ids)
+                                    ),
+                                )
+                            )
+                        )
+                        .mappings()
+                        .all()
+                    )
+            by_id = {row["id"]: dict(row) for row in rows}
+            by_id.update({row["id"]: dict(row) for row in pair_rows})
+            rows = sorted(by_id.values(), key=lambda value: value["sequence_no"])
+            end_sequence = max(int(row["sequence_no"]) for row in rows)
+
+        rows = [
+            row
+            for row in rows
+            if start_sequence <= int(row["sequence_no"]) <= end_sequence
+        ]
+        if not rows:
+            return None
+
+        return SummaryCheckpoint(
+            previous_summary=self._compressed_summary,
+            messages=tuple(self._msg_from_row(row) for row in rows),
+            message_ids=tuple(str(row["id"]) for row in rows),
+            source_message_start=start_sequence,
+            source_message_end=end_sequence,
+        )
+
     def _msg_from_row(self, row: dict[str, Any]) -> Msg:
+        """Handle msg from row.
+
+        Args:
+            - row: dict[str, Any] - The row value.
+
+        Returns:
+            - return Msg - The return value.
+        """
         msg = Msg.from_dict(row["content"])
         msg.id = row["id"]
         return msg
 
     def _active_summary_msg(self) -> Msg | None:
+        """Handle active summary msg.
+
+        Returns:
+            - return Msg | None - The return value.
+        """
         if not self._compressed_summary:
             return None
         return Msg(
@@ -757,6 +1291,16 @@ class AppSQLMemory(MemoryBase):
         mark: str | None,
         exclude_mark: str | None,
     ) -> list[dict[str, Any]]:
+        """Handle filter rows.
+
+        Args:
+            - rows: list[dict[str, Any]] - The rows value.
+            - mark: str | None - The mark value.
+            - exclude_mark: str | None - The exclude mark value.
+
+        Returns:
+            - return list[dict[str, Any]] - The return value.
+        """
         filtered = []
         for row in rows:
             marks = set(row.get("marks") or [])
@@ -767,9 +1311,27 @@ class AppSQLMemory(MemoryBase):
             filtered.append(row)
         return filtered
 
-    async def update_compressed_summary(self, summary: str) -> None:
+    async def update_compressed_summary(
+        self,
+        summary: str,
+        *,
+        source_message_start: int | None = None,
+        source_message_end: int | None = None,
+        metadata: dict[str, Any] | None = None,
+    ) -> None:
         # AgentScope keeps the active summary on the memory object; this also
         # persists it for restarts and UI history.
+        """Handle update compressed summary.
+
+        Args:
+            - summary: str - The summary value.
+            - source_message_start: int | None - First summarized sequence.
+            - source_message_end: int | None - Last summarized sequence.
+            - metadata: dict[str, Any] | None - Extra summary metadata.
+
+        Returns:
+            - return None - The return value.
+        """
         await self._create_table()
         await super().update_compressed_summary(summary)
         with observed_span("sql", "sql.update_summary"):
@@ -786,9 +1348,7 @@ class AppSQLMemory(MemoryBase):
                     next_version = (
                         await conn.scalar(
                             select(
-                                func.max(
-                                    CONVERSATION_SUMMARIES_TABLE.c.summary_version
-                                )
+                                func.max(CONVERSATION_SUMMARIES_TABLE.c.summary_version)
                             ).where(
                                 CONVERSATION_SUMMARIES_TABLE.c.conversation_id
                                 == self.conversation_id
@@ -799,22 +1359,54 @@ class AppSQLMemory(MemoryBase):
                     await conn.execute(
                         insert(CONVERSATION_SUMMARIES_TABLE).values(
                             id=sha256(
-                                f"{self.conversation_id}:{next_version}".encode(
-                                    "utf-8"
-                                )
+                                f"{self.conversation_id}:{next_version}".encode("utf-8")
                             ).hexdigest(),
                             conversation_id=self.conversation_id,
                             summary=summary,
                             summary_version=next_version,
-                            source_message_start=None,
-                            source_message_end=None,
+                            source_message_start=source_message_start,
+                            source_message_end=source_message_end,
                             is_active=True,
-                            metadata={"kind": SUMMARY_MARK},
+                            metadata={"kind": SUMMARY_MARK, **(metadata or {})},
                         )
                     )
         self._summary_hydrated = True
+        await set_cached_summary(self.user_id, self.session_id, summary)
+
+    async def store_summary_checkpoint(
+        self,
+        summary: str,
+        checkpoint: SummaryCheckpoint,
+    ) -> None:
+        """Persist a cumulative summary checkpoint and mark its messages.
+
+        Args:
+            - summary: str - The cumulative summary text.
+            - checkpoint: SummaryCheckpoint - The checkpoint that was summarized.
+
+        Returns:
+            - return None - This function has no return value.
+        """
+        await self.update_compressed_summary(
+            summary,
+            source_message_start=checkpoint.source_message_start,
+            source_message_end=checkpoint.source_message_end,
+            metadata={
+                "checkpoint": True,
+                "message_count": len(checkpoint.message_ids),
+            },
+        )
+        await self.update_messages_mark(
+            COMPRESSED_MARK,
+            msg_ids=list(checkpoint.message_ids),
+        )
 
     async def clear(self) -> None:
+        """Handle clear.
+
+        Returns:
+            - return None - The return value.
+        """
         with observed_span("sql", "sql.memory_clear"):
             async with self._lock:
                 await self._create_table()
@@ -831,10 +1423,29 @@ class AppSQLMemory(MemoryBase):
                             == self.conversation_id
                         )
                     )
+                    await conn.execute(
+                        update(CONVERSATIONS_TABLE)
+                        .where(CONVERSATIONS_TABLE.c.id == self.conversation_id)
+                        .values(
+                            last_sequence_no=0,
+                            last_compressed_sequence_no=0,
+                            updated_at=func.now(),
+                        )
+                    )
         self._compressed_summary = ""
         self._summary_hydrated = True
+        await set_cached_summary(self.user_id, self.session_id, "")
 
     async def delete_by_mark(self, mark: str | list[str], **kwargs: Any) -> int:
+        """Handle delete by mark.
+
+        Args:
+            - mark: str | list[str] - The mark value.
+            - kwargs: Any - The kwargs value.
+
+        Returns:
+            - return int - The return value.
+        """
         await self._create_table()
         marks = [mark] if isinstance(mark, str) else mark
         if SUMMARY_MARK in marks:
@@ -850,19 +1461,22 @@ class AppSQLMemory(MemoryBase):
                     )
             self._compressed_summary = ""
             self._summary_hydrated = True
+            await set_cached_summary(self.user_id, self.session_id, "")
 
         rows = await self._fetch_message_rows()
         msg_ids = [
-            row["id"]
-            for row in rows
-            if set(row.get("marks") or []).intersection(marks)
+            row["id"] for row in rows if set(row.get("marks") or []).intersection(marks)
         ]
         return await self.delete(msg_ids)
 
     async def get_uncompressed_messages(self) -> list[Msg]:
-        """Return full uncompressed DB messages, excluding the summary marker."""
+        """Return full uncompressed DB messages, excluding the summary marker.
+
+        Returns:
+            - return list[Msg] - The return value.
+        """
         rows = self._filter_rows(
-            await self._fetch_message_rows(),
+            await self._fetch_message_rows(only_uncompressed=True),
             mark=None,
             exclude_mark=COMPRESSED_MARK,
         )
@@ -875,30 +1489,51 @@ class AppSQLMemory(MemoryBase):
         prepend_summary: bool = True,
         **kwargs: Any,
     ) -> list[Msg]:
+        """Return the memory.
+
+        Args:
+            - mark: str | None - The mark value.
+            - exclude_mark: str | None - The exclude mark value.
+            - prepend_summary: bool - The prepend summary value.
+            - kwargs: Any - The kwargs value.
+
+        Returns:
+            - return list[Msg] - The return value.
+        """
+        if (
+            self.prompt_scope == "current_turn"
+            and mark is None
+            and exclude_mark is None
+        ):
+            return list(self._turn_messages) if self._capture_turn_messages else []
+
         await self._hydrate_summary()
 
         if mark == SUMMARY_MARK:
             summary = self._active_summary_msg()
             return [summary] if summary else []
 
-        rows = self._filter_rows(await self._fetch_message_rows(), mark, exclude_mark)
+        if exclude_mark == COMPRESSED_MARK:
+            rows = self._filter_rows(
+                await self._fetch_recent_uncompressed_rows(),
+                mark,
+                exclude_mark,
+            )
+        else:
+            rows = self._filter_rows(
+                await self._fetch_message_rows(
+                    only_uncompressed=exclude_mark == COMPRESSED_MARK,
+                ),
+                mark,
+                exclude_mark,
+            )
         msgs = [self._msg_from_row(row) for row in rows]
 
-        # Compression receives full uncompressed history. Normal prompt
-        # construction receives summary + recent window only.
-        if exclude_mark == COMPRESSED_MARK and not _called_from_compression():
-            current = None
-            if msgs and msgs[-1].role == "user":
-                current = msgs[-1]
-                msgs = msgs[:-1]
-
-            recent = _recent_window(msgs, self.keep_recent)
-            if current is not None:
-                recent = [*recent, current]
-
+        # Normal prompt construction receives summary + recent window only.
+        if exclude_mark == COMPRESSED_MARK:
             if prepend_summary and self._compressed_summary:
-                return [Msg("memory", self._compressed_summary, "user"), *recent]
-            return recent
+                return [Msg("memory", self._compressed_summary, "user"), *msgs]
+            return msgs
 
         if prepend_summary and self._compressed_summary:
             return [Msg("memory", self._compressed_summary, "user"), *msgs]
@@ -910,6 +1545,16 @@ class AppSQLMemory(MemoryBase):
         marks: str | list[str] | None = None,
         **kwargs: Any,
     ) -> None:
+        """Handle add.
+
+        Args:
+            - memories: Msg | list[Msg] | None - The memories value.
+            - marks: str | list[str] | None - The marks value.
+            - kwargs: Any - The kwargs value.
+
+        Returns:
+            - return None - The return value.
+        """
         if memories is None:
             return
 
@@ -918,90 +1563,130 @@ class AppSQLMemory(MemoryBase):
 
         base_marks = [marks] if isinstance(marks, str) else list(marks or [])
         skip_duplicated = kwargs.get("skip_duplicated", True)
+        prepared_messages: list[Msg] = []
+        for original in memories:
+            for msg in _split_mixed_tool_messages(original):
+                prepared_messages.append(_compact_tool_result_msg(msg))
+
+        if not prepared_messages:
+            return
+
         with observed_span("sql", "sql.memory_add") as span:
             async with self._lock:
                 await self._create_table()
                 async with self.engine.begin() as conn:
-                    sequence_no = await self._next_sequence(conn)
-                    inserted_visible = False
+                    existing_ids: set[str] = set()
+                    if skip_duplicated:
+                        existing_ids = {
+                            row[0]
+                            for row in (
+                                await conn.execute(
+                                    select(CONVERSATION_MESSAGES_TABLE.c.id).where(
+                                        CONVERSATION_MESSAGES_TABLE.c.id.in_(
+                                            [msg.id for msg in prepared_messages]
+                                        )
+                                    )
+                                )
+                            ).all()
+                        }
+
+                    rows_to_insert: list[dict[str, Any]] = []
                     title_candidate = None
-                    inserted_count = 0
-                    for original in memories:
-                        for msg in _split_mixed_tool_messages(original):
-                            msg = _compact_tool_result_msg(msg)
-                            if skip_duplicated and await conn.scalar(
-                                select(CONVERSATION_MESSAGES_TABLE.c.id).where(
-                                    CONVERSATION_MESSAGES_TABLE.c.id == msg.id
-                                )
-                            ):
-                                continue
+                    captured: list[Msg] = []
+                    sequence_no = await self._reserve_sequences(
+                        conn,
+                        len(
+                            [
+                                msg
+                                for msg in prepared_messages
+                                if msg.id not in existing_ids
+                            ]
+                        ),
+                    )
+                    for msg in prepared_messages:
+                        if skip_duplicated and msg.id in existing_ids:
+                            continue
 
-                            msg_marks = list(base_marks)
-                            if msg.has_content_blocks("tool_use"):
-                                msg_marks.append(TOOL_CALL_MARK)
-                            if msg.has_content_blocks("tool_result"):
-                                msg_marks.append(TOOL_RESULT_MARK)
+                        msg_marks = list(base_marks)
+                        if msg.has_content_blocks("tool_use"):
+                            msg_marks.append(TOOL_CALL_MARK)
+                        if msg.has_content_blocks("tool_result"):
+                            msg_marks.append(TOOL_RESULT_MARK)
 
-                            tool_use = next(
-                                iter(msg.get_content_blocks("tool_use")),
-                                None,
-                            )
-                            tool_result = next(
-                                iter(msg.get_content_blocks("tool_result")),
-                                None,
-                            )
-                            tool_block = tool_use or tool_result
-                            visible = (
-                                msg.role in {"user", "assistant"}
-                                and not msg.has_content_blocks("tool_use")
-                                and not msg.has_content_blocks("tool_result")
-                                and msg.metadata.get("kind") != SUMMARY_MARK
-                            )
-                            compact = _compact_content(msg)
-                            if visible:
-                                inserted_visible = True
-                                if msg.role == "user" and not title_candidate:
-                                    title_candidate = compact
-                            await conn.execute(
-                                insert(CONVERSATION_MESSAGES_TABLE).values(
-                                    id=msg.id,
-                                    conversation_id=self.conversation_id,
-                                    sequence_no=sequence_no,
-                                    role=msg.role,
-                                    name=msg.name,
-                                    message_type=_message_type(msg),
-                                    content=msg.to_dict(),
-                                    compact_content=compact,
-                                    tool_call_id=_block_id(tool_block)
-                                    if tool_block
-                                    else None,
-                                    tool_name=_tool_name(tool_block)
-                                    if tool_block
-                                    else None,
-                                    marks=sorted(set(msg_marks)),
-                                    visible_to_user=visible,
-                                    metadata=msg.metadata,
-                                )
-                            )
-                            sequence_no += 1
-                            inserted_count += 1
-                    if inserted_visible:
-                        current_title = await conn.scalar(
-                            select(CONVERSATIONS_TABLE.c.title).where(
-                                CONVERSATIONS_TABLE.c.id == self.conversation_id
+                        tool_use = next(iter(msg.get_content_blocks("tool_use")), None)
+                        tool_result = next(
+                            iter(msg.get_content_blocks("tool_result")),
+                            None,
+                        )
+                        tool_block = tool_use or tool_result
+                        visible = (
+                            msg.role in {"user", "assistant"}
+                            and not msg.has_content_blocks("tool_use")
+                            and not msg.has_content_blocks("tool_result")
+                            and msg.metadata.get("kind") != SUMMARY_MARK
+                        )
+                        compact = _compact_content(msg)
+                        if visible and msg.role == "user" and not title_candidate:
+                            title_candidate = compact
+                        rows_to_insert.append(
+                            {
+                                "id": msg.id,
+                                "conversation_id": self.conversation_id,
+                                "sequence_no": sequence_no,
+                                "role": msg.role,
+                                "name": msg.name,
+                                "message_type": _message_type(msg),
+                                "content": msg.to_dict(),
+                                "compact_content": compact,
+                                "tool_call_id": (
+                                    _block_id(tool_block) if tool_block else None
+                                ),
+                                "tool_name": (
+                                    _tool_name(tool_block) if tool_block else None
+                                ),
+                                "marks": sorted(set(msg_marks)),
+                                "visible_to_user": visible,
+                                "is_compressed": COMPRESSED_MARK in set(msg_marks),
+                                "metadata": msg.metadata,
+                            }
+                        )
+                        captured.append(msg)
+                        sequence_no += 1
+
+                    if rows_to_insert:
+                        await conn.execute(
+                            _insert_many_ignore(
+                                CONVERSATION_MESSAGES_TABLE,
+                                rows_to_insert,
+                                conn.dialect.name,
                             )
                         )
+                    if rows_to_insert:
                         values = {"updated_at": func.now()}
-                        if not current_title and title_candidate:
-                            values["title"] = _truncate(title_candidate, 80)
+                        if title_candidate:
+                            values["title"] = func.coalesce(
+                                CONVERSATIONS_TABLE.c.title,
+                                _truncate(title_candidate, 80),
+                            )
                         await conn.execute(
                             update(CONVERSATIONS_TABLE)
                             .where(CONVERSATIONS_TABLE.c.id == self.conversation_id)
                             .values(**values)
                         )
-                    span.update(inserted_count=inserted_count)
+                    if self._capture_turn_messages:
+                        self._turn_messages.extend(captured)
+                    span.update(inserted_count=len(rows_to_insert))
 
     async def delete(self, msg_ids: list[str], **kwargs: Any) -> int:
+        """Handle delete.
+
+        Args:
+            - msg_ids: list[str] - The msg ids value.
+            - kwargs: Any - The kwargs value.
+
+        Returns:
+            - return int - The return value.
+        """
         if not msg_ids:
             return 0
         await self._create_table()
@@ -1020,6 +1705,11 @@ class AppSQLMemory(MemoryBase):
             return deleted_count
 
     async def size(self) -> int:
+        """Handle size.
+
+        Returns:
+            - return int - The return value.
+        """
         await self._create_table()
         with observed_span("sql", "sql.memory_size"):
             async with self.engine.connect() as conn:
@@ -1039,9 +1729,20 @@ class AppSQLMemory(MemoryBase):
         old_mark: str | None = None,
         msg_ids: list[str] | None = None,
     ) -> int:
+        """Handle update messages mark.
+
+        Args:
+            - new_mark: str | None - The new mark value.
+            - old_mark: str | None - The old mark value.
+            - msg_ids: list[str] | None - The msg ids value.
+
+        Returns:
+            - return int - The return value.
+        """
         await self._create_table()
-        rows = await self._fetch_message_rows()
+        rows = await self._fetch_message_rows(msg_ids=msg_ids)
         updated = 0
+        max_compressed_sequence: int | None = None
         with observed_span("sql", "sql.update_message_marks") as span:
             async with self._lock:
                 async with self.engine.begin() as conn:
@@ -1066,16 +1767,39 @@ class AppSQLMemory(MemoryBase):
                                 changed = True
 
                         if changed:
+                            values = {"marks": sorted(set(marks))}
+                            if new_mark == COMPRESSED_MARK:
+                                values["is_compressed"] = True
+                                max_compressed_sequence = max(
+                                    max_compressed_sequence or 0,
+                                    int(row["sequence_no"]),
+                                )
+                            elif old_mark == COMPRESSED_MARK:
+                                values["is_compressed"] = False
                             await conn.execute(
                                 update(CONVERSATION_MESSAGES_TABLE)
                                 .where(CONVERSATION_MESSAGES_TABLE.c.id == row["id"])
-                                .values(marks=sorted(set(marks)))
+                                .values(**values)
                             )
                             updated += 1
+                    if max_compressed_sequence is not None:
+                        await conn.execute(
+                            update(CONVERSATIONS_TABLE)
+                            .where(CONVERSATIONS_TABLE.c.id == self.conversation_id)
+                            .values(
+                                last_compressed_sequence_no=max_compressed_sequence,
+                                updated_at=func.now(),
+                            )
+                        )
             span.update(updated_count=updated)
         return updated
 
     async def close(self) -> None:
+        """Handle close.
+
+        Returns:
+            - return None - The return value.
+        """
         return None
 
 
@@ -1083,14 +1807,26 @@ def load_memory(
     session_id: str,
     user_id: str = DEFAULT_USER_ID,
     settings: Settings | None = None,
+    prompt_scope: str = "conversation",
 ) -> AppSQLMemory:
-    """Create SQL-backed memory keyed by user_id and session_id."""
+    """Create SQL-backed memory keyed by user_id and session_id.
+
+    Args:
+        - session_id: str - The session id value.
+        - user_id: str - The user id value.
+        - settings: Settings | None - The settings value.
+        - prompt_scope: str - Prompt memory scope.
+
+    Returns:
+        - return AppSQLMemory - The return value.
+    """
     settings = settings or get_settings()
     return AppSQLMemory(
         _get_engine(settings),
         user_id=user_id,
         session_id=session_id,
         keep_recent=_window_size(settings),
+        prompt_scope=prompt_scope,
     )
 
 
@@ -1100,7 +1836,16 @@ async def list_user_conversations(
     limit: int = 20,
     settings: Settings | None = None,
 ) -> list[dict[str, Any]]:
-    """Return recent SQL conversations for the frontend sidebar."""
+    """Return recent SQL conversations for the frontend sidebar.
+
+    Args:
+        - user_id: str - The user id value.
+        - limit: int - The limit value.
+        - settings: Settings | None - The settings value.
+
+    Returns:
+        - return list[dict[str, Any]] - The return value.
+    """
     settings = settings or get_settings()
     engine = _get_engine(settings)
     await ensure_storage_ready(settings)
@@ -1176,7 +1921,17 @@ async def list_conversation_messages(
     limit: int = 200,
     settings: Settings | None = None,
 ) -> list[dict[str, Any]]:
-    """Return visible user/assistant messages for one conversation."""
+    """Return visible user/assistant messages for one conversation.
+
+    Args:
+        - session_id: str - The session id value.
+        - user_id: str - The user id value.
+        - limit: int - The limit value.
+        - settings: Settings | None - The settings value.
+
+    Returns:
+        - return list[dict[str, Any]] - The return value.
+    """
     settings = settings or get_settings()
     engine = _get_engine(settings)
     conversation_id = _storage_session_id(user_id, session_id)
@@ -1185,24 +1940,28 @@ async def list_conversation_messages(
     with observed_span("sql", "sql.list_messages") as span:
         async with engine.connect() as conn:
             rows = (
-                await conn.execute(
-                    select(
-                        CONVERSATION_MESSAGES_TABLE.c.id,
-                        CONVERSATION_MESSAGES_TABLE.c.sequence_no,
-                        CONVERSATION_MESSAGES_TABLE.c.role,
-                        CONVERSATION_MESSAGES_TABLE.c.name,
-                        CONVERSATION_MESSAGES_TABLE.c.compact_content,
-                        CONVERSATION_MESSAGES_TABLE.c.created_at,
+                (
+                    await conn.execute(
+                        select(
+                            CONVERSATION_MESSAGES_TABLE.c.id,
+                            CONVERSATION_MESSAGES_TABLE.c.sequence_no,
+                            CONVERSATION_MESSAGES_TABLE.c.role,
+                            CONVERSATION_MESSAGES_TABLE.c.name,
+                            CONVERSATION_MESSAGES_TABLE.c.compact_content,
+                            CONVERSATION_MESSAGES_TABLE.c.created_at,
+                        )
+                        .where(
+                            CONVERSATION_MESSAGES_TABLE.c.conversation_id
+                            == conversation_id,
+                            CONVERSATION_MESSAGES_TABLE.c.visible_to_user.is_(True),
+                        )
+                        .order_by(CONVERSATION_MESSAGES_TABLE.c.sequence_no)
+                        .limit(limit)
                     )
-                    .where(
-                        CONVERSATION_MESSAGES_TABLE.c.conversation_id
-                        == conversation_id,
-                        CONVERSATION_MESSAGES_TABLE.c.visible_to_user.is_(True),
-                    )
-                    .order_by(CONVERSATION_MESSAGES_TABLE.c.sequence_no)
-                    .limit(limit)
                 )
-            ).mappings().all()
+                .mappings()
+                .all()
+            )
         span.update(row_count=len(rows))
 
     return [
@@ -1219,7 +1978,14 @@ async def list_conversation_messages(
 
 
 async def ensure_menu_catalog(settings: Settings | None = None) -> None:
-    """Seed SQL menu_items from the canonical parsed menu document."""
+    """Seed SQL menu_items from the canonical parsed menu document.
+
+    Args:
+        - settings: Settings | None - The settings value.
+
+    Returns:
+        - return None - The return value.
+    """
     global _MENU_CATALOG_INITIALIZED
     if _MENU_CATALOG_INITIALIZED:
         return
@@ -1277,7 +2043,15 @@ async def resolve_menu_item_for_cart(
     item_ref: str,
     settings: Settings | None = None,
 ) -> MenuItem:
-    """Resolve an exact SQL menu item id or exact item name for cart tools."""
+    """Resolve an exact SQL menu item id or exact item name for cart tools.
+
+    Args:
+        - item_ref: str - The item ref value.
+        - settings: Settings | None - The settings value.
+
+    Returns:
+        - return MenuItem - The return value.
+    """
     settings = settings or get_settings()
     await ensure_menu_catalog(settings)
     engine = _get_engine(settings)
@@ -1286,13 +2060,17 @@ async def resolve_menu_item_for_cart(
     with observed_span("sql", "sql.resolve_menu_item") as span:
         async with engine.connect() as conn:
             row = (
-                await conn.execute(
-                    select(MENU_ITEMS_TABLE).where(
-                        (MENU_ITEMS_TABLE.c.id == item_ref)
-                        | (MENU_ITEMS_TABLE.c.normalized_name == normalized)
+                (
+                    await conn.execute(
+                        select(MENU_ITEMS_TABLE).where(
+                            (MENU_ITEMS_TABLE.c.id == item_ref)
+                            | (MENU_ITEMS_TABLE.c.normalized_name == normalized)
+                        )
                     )
                 )
-            ).mappings().first()
+                .mappings()
+                .first()
+            )
         span.update(found=row is not None)
 
     if row is None:
@@ -1319,7 +2097,17 @@ async def save_cart_snapshot(
     user_id: str = DEFAULT_USER_ID,
     settings: Settings | None = None,
 ) -> None:
-    """Persist the latest current-cart snapshot for a conversation."""
+    """Persist the latest current-cart snapshot for a conversation.
+
+    Args:
+        - session_id: str - The session id value.
+        - cart: Cart - The cart value.
+        - user_id: str - The user id value.
+        - settings: Settings | None - The settings value.
+
+    Returns:
+        - return None - The return value.
+    """
     memory = load_memory(session_id, user_id=user_id, settings=settings)
     await memory._create_table()
 
@@ -1348,7 +2136,9 @@ async def save_cart_snapshot(
                     await conn.execute(insert(CARTS_TABLE).values(id=cart_id, **values))
 
                 await conn.execute(
-                    delete(CART_ITEMS_TABLE).where(CART_ITEMS_TABLE.c.cart_id == cart_id)
+                    delete(CART_ITEMS_TABLE).where(
+                        CART_ITEMS_TABLE.c.cart_id == cart_id
+                    )
                 )
                 for index, item in enumerate(cart.items):
                     await conn.execute(
@@ -1377,7 +2167,16 @@ async def clear_cart_snapshot(
     user_id: str = DEFAULT_USER_ID,
     settings: Settings | None = None,
 ) -> None:
-    """Persist an empty current cart after checkout or manual clear."""
+    """Persist an empty current cart after checkout or manual clear.
+
+    Args:
+        - session_id: str - The session id value.
+        - user_id: str - The user id value.
+        - settings: Settings | None - The settings value.
+
+    Returns:
+        - return None - The return value.
+    """
     await save_cart_snapshot(
         session_id,
         Cart(session_id=session_id),
@@ -1391,7 +2190,16 @@ async def delete_session_data(
     user_id: str = DEFAULT_USER_ID,
     settings: Settings | None = None,
 ) -> None:
-    """Delete persisted memory, cart, and order data for one user/session."""
+    """Delete persisted memory, cart, and order data for one user/session.
+
+    Args:
+        - session_id: str - The session id value.
+        - user_id: str - The user id value.
+        - settings: Settings | None - The settings value.
+
+    Returns:
+        - return None - The return value.
+    """
     settings = settings or get_settings()
     engine = _get_engine(settings)
     conversation_id = _storage_session_id(user_id, session_id)
@@ -1460,6 +2268,7 @@ async def delete_session_data(
                 )
             )
     _ENSURED_CONVERSATIONS.discard((user_id, conversation_id))
+    await delete_cached_summary(user_id, session_id)
 
 
 async def save_order_snapshot(
@@ -1467,7 +2276,16 @@ async def save_order_snapshot(
     user_id: str = DEFAULT_USER_ID,
     settings: Settings | None = None,
 ) -> None:
-    """Persist or update an order and its immutable line-item snapshot."""
+    """Persist or update an order and its immutable line-item snapshot.
+
+    Args:
+        - order: Order - The order value.
+        - user_id: str - The user id value.
+        - settings: Settings | None - The settings value.
+
+    Returns:
+        - return None - The return value.
+    """
     memory = load_memory(order.session_id, user_id=user_id, settings=settings)
     await memory._create_table()
 
@@ -1475,9 +2293,7 @@ async def save_order_snapshot(
         async with memory._lock:
             async with memory.engine.begin() as conn:
                 exists = await conn.scalar(
-                    select(ORDERS_TABLE.c.id).where(
-                        ORDERS_TABLE.c.id == order.order_id
-                    )
+                    select(ORDERS_TABLE.c.id).where(ORDERS_TABLE.c.id == order.order_id)
                 )
                 values = {
                     "conversation_id": memory.conversation_id,
@@ -1526,11 +2342,27 @@ async def save_order_snapshot(
 
 
 async def get_summary(memory: MemoryBase) -> Msg | None:
+    """Return the summary.
+
+    Args:
+        - memory: MemoryBase - The memory value.
+
+    Returns:
+        - return Msg | None - The return value.
+    """
     summaries = await memory.get_memory(mark=SUMMARY_MARK, prepend_summary=False)
     return summaries[-1] if summaries else None
 
 
 async def get_recent_messages(memory: MemoryBase) -> list[Msg]:
+    """Return the recent messages.
+
+    Args:
+        - memory: MemoryBase - The memory value.
+
+    Returns:
+        - return list[Msg] - The return value.
+    """
     return await memory.get_memory(
         exclude_mark=COMPRESSED_MARK,
         prepend_summary=False,
@@ -1538,7 +2370,14 @@ async def get_recent_messages(memory: MemoryBase) -> list[Msg]:
 
 
 async def build_context(memory: MemoryBase) -> list[Msg]:
-    """Return prompt messages in the required order before the current input."""
+    """Return prompt messages in the required order before the current input.
+
+    Args:
+        - memory: MemoryBase - The memory value.
+
+    Returns:
+        - return list[Msg] - The return value.
+    """
     from cafe.agents.prompts import ORCHESTRATOR_PROMPT
 
     msgs = [Msg("system", ORCHESTRATOR_PROMPT, "system")]
@@ -1553,36 +2392,198 @@ async def save_messages(
     msgs: Msg | list[Msg],
     marks: str | list[str] | None = None,
 ) -> None:
+    """Save the messages.
+
+    Args:
+        - memory: MemoryBase - The memory value.
+        - msgs: Msg | list[Msg] - The msgs value.
+        - marks: str | list[str] | None - The marks value.
+
+    Returns:
+        - return None - The return value.
+    """
     await memory.add(msgs, marks=marks)
 
 
-async def compress_memory_after_turn(agent: ReActAgent) -> bool:
-    """Summarize older messages once the exact recent window is exceeded."""
-    memory = getattr(agent, "memory", None)
-    compression_config = getattr(agent, "compression_config", None)
-    if (
-        memory is None
-        or compression_config is None
-        or not compression_config.enable
-        or not hasattr(memory, "get_uncompressed_messages")
-        or not hasattr(agent, "_compress_memory_if_needed")
+def _message_text(msg: Msg) -> str:
+    """Return best-effort text content for summary checkpoints.
+
+    Args:
+        - msg: Msg - The message value.
+
+    Returns:
+        - return str - Text content.
+    """
+    get_text = getattr(msg, "get_text_content", None)
+    if callable(get_text):
+        return get_text() or ""
+    return _content_text(getattr(msg, "content", ""))
+
+
+def _message_for_summary(msg: Msg) -> str:
+    """Return one compact line for checkpoint summarization.
+
+    Args:
+        - msg: Msg - The message to render.
+
+    Returns:
+        - return str - Compact role-prefixed text.
+    """
+    role = getattr(msg, "role", "unknown")
+    name = getattr(msg, "name", role)
+    text = _message_text(msg).strip()
+    if not text:
+        text = _compact_content(msg)
+    text = _truncate(text, 1200)
+    return f"{role}/{name}: {text}"
+
+
+def _checkpoint_prompt(checkpoint: SummaryCheckpoint) -> str:
+    """Build the LLM prompt for one cumulative summary checkpoint.
+
+    Args:
+        - checkpoint: SummaryCheckpoint - The checkpoint to summarize.
+
+    Returns:
+        - return str - Prompt text for the summary model.
+    """
+    previous = checkpoint.previous_summary.strip() or "No previous summary yet."
+    messages = "\n".join(
+        f"{index}. {_message_for_summary(msg)}"
+        for index, msg in enumerate(checkpoint.messages, start=1)
+    )
+    return (
+        f"{COMPRESSION_PROMPT}\n\n"
+        f"<previous_summary>\n{previous}\n</previous_summary>\n\n"
+        f"<new_checkpoint_messages "
+        f"start_sequence=\"{checkpoint.source_message_start}\" "
+        f"end_sequence=\"{checkpoint.source_message_end}\">\n"
+        f"{messages}\n"
+        f"</new_checkpoint_messages>"
+    )
+
+
+def _response_text(response: Any) -> str:
+    """Extract plain text from an AgentScope chat response.
+
+    Args:
+        - response: Any - The model response.
+
+    Returns:
+        - return str - Extracted text.
+    """
+    parts: list[str] = []
+    for block in getattr(response, "content", []) or []:
+        if isinstance(block, dict) and block.get("type") == "text":
+            parts.append(str(block.get("text", "")))
+        elif getattr(block, "type", None) == "text":
+            parts.append(str(getattr(block, "text", "")))
+    return "\n".join(part for part in parts if part).strip()
+
+
+async def _generate_checkpoint_summary(
+    agent: ReActAgent,
+    checkpoint: SummaryCheckpoint,
+) -> str:
+    """Generate the cumulative summary for one checkpoint with the LLM.
+
+    Args:
+        - agent: ReActAgent - The agent that owns the memory/model.
+        - checkpoint: SummaryCheckpoint - The pending checkpoint.
+
+    Returns:
+        - return str - The formatted cumulative summary.
+    """
+    custom = getattr(agent, "summarize_memory_checkpoint", None)
+    if callable(custom):
+        result = custom(checkpoint)
+        if hasattr(result, "__await__"):
+            result = await result
+        return str(result)
+
+    from cafe.agents.llm import make_chat_model
+    from cafe.agents.memory import make_chat_formatter
+
+    settings = get_settings()
+    model = getattr(agent, "model", None) or make_chat_model(
+        settings,
+        agent_name="MemorySummarizer",
+    )
+    formatter = getattr(agent, "formatter", None) or make_chat_formatter(settings)
+    prompt = await formatter.format(
+        [
+            Msg("system", "You write concise cumulative cafe memory summaries.", "system"),
+            Msg("user", _checkpoint_prompt(checkpoint), "user"),
+        ]
+    )
+
+    with observed_span(
+        "memory_compression",
+        "memory.summary_checkpoint",
+        {
+            "source_message_start": checkpoint.source_message_start,
+            "source_message_end": checkpoint.source_message_end,
+        },
     ):
+        response = await model(prompt, structured_model=CafeConversationSummary)
+
+    final_response = None
+    if getattr(model, "stream", False):
+        async for chunk in response:
+            final_response = chunk
+    else:
+        final_response = response
+
+    metadata = getattr(final_response, "metadata", None) or {}
+    if metadata:
+        return SUMMARY_TEMPLATE.format(**metadata)
+
+    text = _response_text(final_response)
+    if text:
+        return text
+    raise RuntimeError("summary checkpoint LLM did not return summary content")
+
+
+async def should_compress_memory_after_turn(agent: ReActAgent) -> bool:
+    """Return whether the next 8-message summary checkpoint is ready.
+
+    Args:
+        - agent: ReActAgent - The agent value.
+
+    Returns:
+        - return bool - Whether compression should run.
+    """
+    memory = getattr(agent, "memory", None)
+    if memory is None or not hasattr(memory, "next_summary_checkpoint"):
         return False
 
-    uncompressed_msgs = await memory.get_uncompressed_messages()
-    keep_recent = getattr(memory, "keep_recent", compression_config.keep_recent)
-    if len(uncompressed_msgs) <= keep_recent:
+    settings = get_settings()
+    checkpoint = await memory.next_summary_checkpoint(
+        settings.memory_summary_checkpoint_messages,
+    )
+    return checkpoint is not None
+
+
+async def compress_memory_after_turn(agent: ReActAgent) -> bool:
+    """Create one cumulative summary checkpoint when 8 new messages are ready.
+
+    Args:
+        - agent: ReActAgent - The agent value.
+
+    Returns:
+        - return bool - The return value.
+    """
+    memory = getattr(agent, "memory", None)
+    if memory is None or not hasattr(memory, "next_summary_checkpoint"):
         return False
 
-    original_threshold = compression_config.trigger_threshold
-    original_keep_recent = compression_config.keep_recent
-    try:
-        compression_config.trigger_threshold = 0
-        compression_config.keep_recent = keep_recent
-        with observed_span("memory_compression", "memory.compression"):
-            await agent._compress_memory_if_needed()
-    finally:
-        compression_config.trigger_threshold = original_threshold
-        compression_config.keep_recent = original_keep_recent
+    settings = get_settings()
+    checkpoint = await memory.next_summary_checkpoint(
+        settings.memory_summary_checkpoint_messages,
+    )
+    if checkpoint is None:
+        return False
 
+    summary = await _generate_checkpoint_summary(agent, checkpoint)
+    await memory.store_summary_checkpoint(summary, checkpoint)
     return True

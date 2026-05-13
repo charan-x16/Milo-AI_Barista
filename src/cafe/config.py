@@ -1,3 +1,5 @@
+"""Cafe config module."""
+
 from functools import lru_cache
 
 from pydantic import AliasChoices, Field
@@ -54,17 +56,29 @@ class Settings(BaseSettings):
     qdrant_product_collection: str = "btb_product_menu"
     qdrant_menu_attributes_collection: str = "btb_menu_attributes"
     qdrant_support_collection: str = "btb_company_policies"
-    redis_url: str = Field(
-        default="",
-        validation_alias=AliasChoices("REDIS_URL", "CACHE_REDIS_URL"),
-    )
     log_level: str = "INFO"
     memory_database_url: str = "sqlite+aiosqlite:///./data/memory/milo_memory.sqlite3"
     memory_max_prompt_tokens: int = 90000
-    memory_compression_trigger_tokens: int = 60000
     memory_keep_recent_messages: int = 8
+    memory_summary_checkpoint_messages: int = 8
+    memory_summary_cache_ttl_seconds: int = 1800
+    memory_summary_cache_max_entries: int = 1000
+    memory_db_pool_size: int = 5
+    memory_db_max_overflow: int = 10
+    memory_db_pool_timeout: int = 5
+    memory_db_pool_recycle: int = 300
+    memory_db_pool_pre_ping: bool = False
+    orchestrator_max_iters: int = 6
+    specialist_max_iters: int = 4
+    session_cache_max_sessions: int = 1000
+    session_cache_ttl_seconds: int = 1800
 
 
 @lru_cache
 def get_settings() -> Settings:
+    """Return the settings.
+
+    Returns:
+        - return Settings - The return value.
+    """
     return Settings()
