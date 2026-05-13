@@ -46,6 +46,8 @@ from cafe.models.menu import MenuItem
 from cafe.models.order import Order
 from cafe.services.menu_index_service import build_menu_item_match_index
 from cafe.config import Settings, get_settings
+from .summaries.models import create_memory_summaries_table
+from .summaries.repositories import MemorySummaryRepository
 
 
 DEFAULT_USER_ID = "anonymous"
@@ -121,6 +123,8 @@ CONVERSATION_SUMMARIES_TABLE = Table(
     Column("metadata", JSON, nullable=False, default=dict),
     Column("created_at", DateTime(timezone=True), server_default=func.now()),
 )
+
+MEMORY_SUMMARIES_TABLE = create_memory_summaries_table(APP_MEMORY_METADATA)
 
 MENU_ITEMS_TABLE = Table(
     "menu_items",
@@ -238,7 +242,7 @@ COMPRESSION_PROMPT = (
 
 
 def _window_size(settings: Settings) -> int:
-    return min(max(settings.memory_keep_recent_messages, 8), 12)
+    return max(settings.memory_recent_messages, 1)
 
 
 def _storage_session_id(user_id: str, session_id: str) -> str:
@@ -592,6 +596,13 @@ class AppSQLMemory(MemoryBase):
         self._initialized = False
         self._lock = asyncio.Lock()
 
+    def _summary_repo(self) -> MemorySummaryRepository:
+        return MemorySummaryRepository(
+            self.engine,
+            summary_table=MEMORY_SUMMARIES_TABLE,
+            message_table=CONVERSATION_MESSAGES_TABLE,
+        )
+
     async def _create_table(self) -> None:
         if self._initialized:
             return
@@ -629,25 +640,10 @@ class AppSQLMemory(MemoryBase):
         self._initialized = True
 
     async def _hydrate_summary(self) -> None:
-        if self._summary_hydrated:
-            return
-
         await self._create_table()
-        async with self.engine.connect() as conn:
-            row = (
-                await conn.execute(
-                    select(CONVERSATION_SUMMARIES_TABLE.c.summary)
-                    .where(
-                        CONVERSATION_SUMMARIES_TABLE.c.conversation_id
-                        == self.conversation_id,
-                        CONVERSATION_SUMMARIES_TABLE.c.is_active.is_(True),
-                    )
-                    .order_by(CONVERSATION_SUMMARIES_TABLE.c.summary_version.desc())
-                    .limit(1)
-                )
-            ).first()
-
-        self._compressed_summary = row.summary if row else ""
+        self._compressed_summary = await self._summary_repo().latest_summary_text(
+            self.conversation_id
+        )
         self._summary_hydrated = True
 
     async def _next_sequence(self, conn) -> int:
@@ -751,6 +747,7 @@ class AppSQLMemory(MemoryBase):
     async def clear(self) -> None:
         async with self._lock:
             await self._create_table()
+            await self._summary_repo().delete_for_conversation(self.conversation_id)
             async with self.engine.begin() as conn:
                 await conn.execute(
                     delete(CONVERSATION_SUMMARIES_TABLE).where(
@@ -771,6 +768,7 @@ class AppSQLMemory(MemoryBase):
         await self._create_table()
         marks = [mark] if isinstance(mark, str) else mark
         if SUMMARY_MARK in marks:
+            await self._summary_repo().delete_for_conversation(self.conversation_id)
             async with self.engine.begin() as conn:
                 await conn.execute(
                     update(CONVERSATION_SUMMARIES_TABLE)
@@ -814,10 +812,14 @@ class AppSQLMemory(MemoryBase):
             return [summary] if summary else []
 
         rows = self._filter_rows(await self._fetch_message_rows(), mark, exclude_mark)
+
+        if exclude_mark == COMPRESSED_MARK and not _called_from_compression():
+            rows = [row for row in rows if row.get("visible_to_user")]
+
         msgs = [self._msg_from_row(row) for row in rows]
 
         # Compression receives full uncompressed history. Normal prompt
-        # construction receives summary + recent window only.
+        # construction receives summary + recent visible messages only.
         if exclude_mark == COMPRESSED_MARK and not _called_from_compression():
             current = None
             if msgs and msgs[-1].role == "user":
@@ -1097,7 +1099,6 @@ async def list_conversation_messages(
     settings = settings or get_settings()
     engine = _get_engine(settings)
     conversation_id = _storage_session_id(user_id, session_id)
-
     async with engine.begin() as conn:
         await conn.run_sync(APP_MEMORY_METADATA.create_all)
         rows = (
@@ -1282,6 +1283,11 @@ async def delete_session_data(
     settings = settings or get_settings()
     engine = _get_engine(settings)
     conversation_id = _storage_session_id(user_id, session_id)
+    summary_repo = MemorySummaryRepository(
+        engine,
+        summary_table=MEMORY_SUMMARIES_TABLE,
+        message_table=CONVERSATION_MESSAGES_TABLE,
+    )
 
     async with engine.begin() as conn:
         await conn.run_sync(APP_MEMORY_METADATA.create_all)
@@ -1327,6 +1333,7 @@ async def delete_session_data(
             delete(CARTS_TABLE).where(CARTS_TABLE.c.conversation_id == conversation_id)
         )
 
+        await summary_repo.delete_for_conversation(conversation_id, conn=conn)
         await conn.execute(
             delete(CONVERSATION_SUMMARIES_TABLE).where(
                 CONVERSATION_SUMMARIES_TABLE.c.conversation_id == conversation_id

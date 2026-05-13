@@ -80,8 +80,8 @@ def build_flow_state() -> dict:
             {
                 "name": "Memory",
                 "status": (
-                    f"keep {settings.memory_keep_recent_messages} exact; "
-                    f"compress older or at {settings.memory_compression_trigger_tokens} tokens"
+                    f"keep {settings.memory_recent_messages} recent; "
+                    f"summarize every {settings.memory_summary_interval_messages} visible messages"
                 ),
             },
         ],
@@ -90,8 +90,8 @@ def build_flow_state() -> dict:
             "model": settings.openai_model,
             "active_sessions": session_ids,
             "memory_max_prompt_tokens": settings.memory_max_prompt_tokens,
-            "memory_compression_trigger_tokens": settings.memory_compression_trigger_tokens,
-            "memory_keep_recent_messages": settings.memory_keep_recent_messages,
+            "memory_recent_messages": settings.memory_recent_messages,
+            "memory_summary_interval_messages": settings.memory_summary_interval_messages,
         },
         "state": {
             "carts": carts,
@@ -451,8 +451,8 @@ DASHBOARD_HTML = """
         ["model", state.runtime.model],
         ["active sessions", state.runtime.active_sessions.length],
         ["max prompt tokens", state.runtime.memory_max_prompt_tokens],
-        ["compression trigger", state.runtime.memory_compression_trigger_tokens],
-        ["recent kept exact", state.runtime.memory_keep_recent_messages]
+        ["recent messages", state.runtime.memory_recent_messages],
+        ["summary interval", state.runtime.memory_summary_interval_messages]
       ].map(([k, v]) => `<div class="row"><span>${k}</span><strong>${text(v)}</strong></div>`).join("");
 
       document.getElementById("components").innerHTML = state.components

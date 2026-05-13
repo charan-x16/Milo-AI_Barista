@@ -12,7 +12,8 @@ def test_debug_flow_state_shape():
 
     assert state["flow"]
     assert state["components"]
-    assert state["runtime"]["memory_keep_recent_messages"] >= 1
+    assert state["runtime"]["memory_recent_messages"] >= 1
+    assert state["runtime"]["memory_summary_interval_messages"] >= 1
     assert "carts" in state["state"]
 
 

@@ -79,6 +79,8 @@ def test_orchestrator_prompt_preserves_product_output_contract():
     assert "copy that answer exactly" in prompt
     assert "Preserve headings, blank lines, bullets" in prompt
     assert "Do not merge categories" in prompt
+    assert "If Product Search says no matching menu items" in prompt
+    assert "Do not suggest generic foods, off-menu alternatives" in prompt
     assert "Never show the full menu unless the user explicitly asked" in prompt
     assert "Do not add generic closers" in prompt
 

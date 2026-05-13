@@ -14,10 +14,10 @@ from cafe import __version__
 from cafe.agents.llm import normalized_provider
 from cafe.agents.memory import (
     DEFAULT_USER_ID,
-    compress_memory_after_turn,
     delete_session_data,
     list_conversation_messages,
     list_user_conversations,
+    maybe_generate_memory_summary,
 )
 from cafe.agents.session_manager import get_session_manager
 from cafe.agents.specialist_tools import (
@@ -152,25 +152,28 @@ async def chat(req: ChatRequest):
         )
 
     try:
-        compressed = await compress_memory_after_turn(orchestrator)
+        summary = await maybe_generate_memory_summary(
+            req.session_id,
+            user_id=req.user_id,
+        )
     except Exception as e:
-        log.warning("post-turn memory compression skipped: %s", e)
+        log.warning("memory summary checkpoint skipped: %s", e)
         trace.add_event(
             turn_id,
             "memory",
             "warning",
-            "Post-turn memory compression skipped",
+            "Memory summary checkpoint skipped",
             {"error": str(e)},
         )
     else:
         trace.add_event(
             turn_id,
             "memory",
-            "complete" if compressed else "skipped",
+            "complete" if summary else "skipped",
             (
-                "Compressed older messages after turn"
-                if compressed
-                else "Recent memory window has not overflowed"
+                "Created checkpoint memory summary"
+                if summary
+                else "No memory summary checkpoint due"
             ),
         )
 

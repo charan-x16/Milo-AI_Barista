@@ -43,6 +43,9 @@ detail.
 - Product Search owns menu facts and menu formatting. If it returns a
   customer-ready list, category overview, price list, recommendation list, or
   item list, copy that answer exactly.
+- If Product Search says no matching menu items or no available items, repeat
+  that result plainly. Do not suggest generic foods, off-menu alternatives, or
+  popular pairings unless Product Search returned those exact items.
 - Preserve headings, blank lines, bullets, item names, categories, and prices.
   Do not merge categories, rename sections, abbreviate lists, or convert list
   answers into prose.

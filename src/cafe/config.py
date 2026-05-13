@@ -1,6 +1,6 @@
 from functools import lru_cache
 
-from pydantic import AliasChoices, Field
+from pydantic import AliasChoices, Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -57,8 +57,50 @@ class Settings(BaseSettings):
     log_level: str = "INFO"
     memory_database_url: str = "sqlite+aiosqlite:///./data/memory/milo_memory.sqlite3"
     memory_max_prompt_tokens: int = 90000
-    memory_compression_trigger_tokens: int = 60000
-    memory_keep_recent_messages: int = 8
+    memory_recent_messages: int = Field(
+        default=8,
+        validation_alias=AliasChoices(
+            "MEMORY_RECENT_MESSAGES",
+            "MEMORY_KEEP_RECENT_MESSAGES",
+        ),
+    )
+    memory_summary_interval_messages: int = Field(
+        default=8,
+        validation_alias=AliasChoices(
+            "MEMORY_SUMMARY_INTERVAL_MESSAGES",
+            "MEMORY_SUMMARY_CHECKPOINT_MESSAGES",
+        ),
+    )
+
+    @model_validator(mode="before")
+    @classmethod
+    def _accept_legacy_memory_kwargs(cls, values):
+        if not isinstance(values, dict):
+            return values
+
+        if (
+            "memory_keep_recent_messages" in values
+            and "memory_recent_messages" not in values
+        ):
+            values["memory_recent_messages"] = values["memory_keep_recent_messages"]
+        if (
+            "memory_summary_checkpoint_messages" in values
+            and "memory_summary_interval_messages" not in values
+        ):
+            values["memory_summary_interval_messages"] = values[
+                "memory_summary_checkpoint_messages"
+            ]
+        return values
+
+    @property
+    def memory_keep_recent_messages(self) -> int:
+        """Backward-compatible name for old callers."""
+        return self.memory_recent_messages
+
+    @property
+    def memory_compression_trigger_tokens(self) -> int:
+        """Backward-compatible name for retired compression callers."""
+        return self.memory_max_prompt_tokens
 
 
 @lru_cache

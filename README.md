@@ -89,6 +89,7 @@ Conversation memory and frontend history data are stored in SQL using:
 - `conversations`
 - `conversation_messages`
 - `conversation_summaries`
+- `memory_summaries`
 - `menu_items`
 - `carts`
 - `cart_items`
@@ -108,9 +109,11 @@ To test migrations against a temporary database without using `.env`:
 uv run alembic -x database_url=sqlite+aiosqlite:///./tmp/alembic-test.sqlite3 upgrade head
 ```
 
-Recent messages stay exact, older messages are compressed into
-`conversation_summaries`, and frontend history reads from `conversations` plus
-`conversation_messages`.
+Recent visible chat messages stay exact. Cumulative checkpoint summaries are
+stored in `memory_summaries` every `MEMORY_SUMMARY_INTERVAL_MESSAGES` visible
+messages and are passed back into the Orchestrator on future turns alongside
+the `MEMORY_RECENT_MESSAGES` visible-message window. The older
+`conversation_summaries` table is retained for compatibility.
 
 ## Frontend APIs
 

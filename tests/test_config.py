@@ -47,3 +47,28 @@ def test_neon_asyncpg_sslmode_url_is_normalized():
     assert "sslmode" not in url
     assert url.startswith("postgresql+asyncpg://")
     assert kwargs == {"connect_args": {"ssl": True, "timeout": 15}}
+
+
+def test_settings_accept_new_memory_env_names(monkeypatch):
+    monkeypatch.setenv("MEMORY_RECENT_MESSAGES", "6")
+    monkeypatch.setenv("MEMORY_SUMMARY_INTERVAL_MESSAGES", "10")
+    monkeypatch.delenv("MEMORY_KEEP_RECENT_MESSAGES", raising=False)
+    monkeypatch.delenv("MEMORY_SUMMARY_CHECKPOINT_MESSAGES", raising=False)
+
+    settings = Settings(_env_file=None)
+
+    assert settings.memory_recent_messages == 6
+    assert settings.memory_summary_interval_messages == 10
+
+
+def test_settings_accept_legacy_memory_env_names(monkeypatch):
+    monkeypatch.delenv("MEMORY_RECENT_MESSAGES", raising=False)
+    monkeypatch.delenv("MEMORY_SUMMARY_INTERVAL_MESSAGES", raising=False)
+    monkeypatch.setenv("MEMORY_KEEP_RECENT_MESSAGES", "7")
+    monkeypatch.setenv("MEMORY_SUMMARY_CHECKPOINT_MESSAGES", "9")
+
+    settings = Settings(_env_file=None)
+
+    assert settings.memory_recent_messages == 7
+    assert settings.memory_keep_recent_messages == 7
+    assert settings.memory_summary_interval_messages == 9

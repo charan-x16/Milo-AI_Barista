@@ -529,8 +529,8 @@ DASHBOARD_HTML = """
         ["model", state.runtime.model],
         ["active sessions", state.runtime.active_sessions.length],
         ["prompt cap", state.runtime.memory_max_prompt_tokens],
-        ["compression", state.runtime.memory_compression_trigger_tokens],
-        ["exact recent", state.runtime.memory_keep_recent_messages]
+        ["recent messages", state.runtime.memory_recent_messages],
+        ["summary interval", state.runtime.memory_summary_interval_messages]
       ].map(([key, value]) => `<div class="row"><span>${key}</span><strong>${escapeHtml(value)}</strong></div>`).join("");
 
       document.getElementById("components").innerHTML = state.components
