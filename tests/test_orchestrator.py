@@ -4,6 +4,7 @@ from types import SimpleNamespace
 import pytest
 
 from cafe.agents import specialist_tools
+from cafe.agents.agent_cache import is_agent_cache_ready, reset_agent_cache
 from cafe.agents.memory import compress_memory_after_turn
 from cafe.agents.specialist_tools import (
     _ask,
@@ -30,9 +31,10 @@ def test_orchestrator_prompt_lists_specialist_tools():
     assert "ask_support_agent" in ORCHESTRATOR_PROMPT
 
 
-def test_specialist_cache_initially_empty():
+def test_specialist_cache_reset_clears_ready_state():
+    reset_agent_cache()
     specialist_tools.reset_specialists()
-    assert specialist_tools._AGENTS == {}
+    assert is_agent_cache_ready() is False
 
 
 def test_get_session_manager_returns_singleton():
