@@ -36,6 +36,28 @@ class MemorySummaryRepository:
 
         return row.summary_text if row else ""
 
+    async def latest_summary_data(self, conversation_id: str) -> dict[str, Any] | None:
+        """Return the latest structured summary JSON for a conversation."""
+        async with self.engine.connect() as conn:
+            result = await conn.scalar(
+                select(self.summary_table.c.summary_json)
+                .where(self.summary_table.c.conversation_id == conversation_id)
+                .order_by(self.summary_table.c.summary_version.desc())
+                .limit(1)
+            )
+
+        if result is None:
+            return None
+        if isinstance(result, str):
+            import json
+
+            try:
+                parsed = json.loads(result)
+            except json.JSONDecodeError:
+                return None
+            return parsed if isinstance(parsed, dict) else None
+        return result if isinstance(result, dict) else None
+
     async def latest_summary(
         self,
         conversation_id: str,

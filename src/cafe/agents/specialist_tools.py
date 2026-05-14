@@ -1,26 +1,33 @@
-"""Wraps each specialist ReActAgent as a callable tool function.
+"""Wraps each cached specialist ReActAgent as a callable tool function.
 
-The Orchestrator's toolkit is built from these. Specialists are short-lived
-because cart/order state lives in StateStore, not in specialist chat memory.
+The Orchestrator's toolkit is built from these. Specialist agents are reused
+between requests, while their in-memory scratchpads are cleared for each lease.
 """
 
+import asyncio
 import json
+import logging
+import time
 from contextvars import ContextVar
 from inspect import isawaitable
+from typing import Any, Literal
 
 from agentscope.message import Msg, TextBlock
 from agentscope.tool import ToolResponse
 
-from cafe.agents.specialists.cart_management_agent import make_cart_management_agent
-from cafe.agents.specialists.customer_support_agent import make_customer_support_agent
-from cafe.agents.specialists.order_management_agent import make_order_management_agent
-from cafe.agents.specialists.product_search_agent import make_product_search_agent
+from cafe.agents.agent_cache import acquire_cached_agent, clear_agent_cache_memories
+from cafe.agents.memory import COMPRESSED_MARK, DEFAULT_USER_ID, load_memory
+from cafe.agents.memory.storage import (
+    CONVERSATION_MESSAGES_TABLE,
+    MEMORY_SUMMARIES_TABLE,
+)
+from cafe.agents.memory.summaries.repositories import MemorySummaryRepository
 from cafe.tools.product_tools import reset_current_product_query, set_current_product_query
 from cafe.tools.product_tools import reset_current_product_session_id, set_current_product_session_id
 
 
-# Kept for the reset helper/tests. Runtime specialist agents are short-lived.
-_AGENTS: dict[str, object] = {}
+logger = logging.getLogger(__name__)
+SpecialistType = Literal["product", "cart", "order", "support"]
 _CURRENT_USER_REQUEST: ContextVar[str | None] = ContextVar(
     "current_user_request",
     default=None,
@@ -28,6 +35,10 @@ _CURRENT_USER_REQUEST: ContextVar[str | None] = ContextVar(
 _CURRENT_SESSION_ID: ContextVar[str | None] = ContextVar(
     "current_session_id",
     default=None,
+)
+_CURRENT_USER_ID: ContextVar[str] = ContextVar(
+    "current_user_id",
+    default=DEFAULT_USER_ID,
 )
 
 
@@ -45,6 +56,129 @@ def set_current_session_id(session_id: str):
 
 def reset_current_session_id(token) -> None:
     _CURRENT_SESSION_ID.reset(token)
+
+
+def set_current_user_id(user_id: str):
+    return _CURRENT_USER_ID.set(user_id or DEFAULT_USER_ID)
+
+
+def reset_current_user_id(token) -> None:
+    _CURRENT_USER_ID.reset(token)
+
+
+def _list_items(value: Any, *, limit: int | None = None) -> list[str]:
+    if value is None:
+        return []
+    if isinstance(value, str):
+        items = [value]
+    elif isinstance(value, list | tuple):
+        items = [str(item) for item in value if str(item).strip()]
+    else:
+        items = [str(value)]
+    if limit is not None:
+        items = items[:limit]
+    return [item.strip() for item in items if item.strip()]
+
+
+def _message_text(msg: Msg) -> str:
+    display_text = getattr(msg, "metadata", {}).get("display_text")
+    if display_text:
+        return str(display_text)
+
+    try:
+        text = msg.get_text_content()
+    except Exception:
+        text = _extract_text_blocks(getattr(msg, "content", ""))
+    return str(text or "").strip()
+
+
+def _append_bullets(parts: list[str], heading: str, values: list[str]) -> None:
+    if values:
+        parts.append(f"{heading}\n" + "\n".join(f"- {value}" for value in values))
+
+
+async def _build_specialist_context(
+    session_id: str,
+    user_id: str,
+    base_query: str,
+    memory_obj=None,
+) -> str:
+    """Build a specialist query enriched with memory summary and recent chat."""
+    context_parts = [f"User request: {base_query.strip()}"]
+
+    try:
+        memory = memory_obj or load_memory(session_id=session_id, user_id=user_id)
+        await memory._create_table()
+        summary_repo = MemorySummaryRepository(
+            memory.engine,
+            summary_table=MEMORY_SUMMARIES_TABLE,
+            message_table=CONVERSATION_MESSAGES_TABLE,
+        )
+
+        summary_data = await summary_repo.latest_summary_data(memory.conversation_id)
+        summary_row = await summary_repo.latest_summary(memory.conversation_id)
+
+        if summary_data:
+            summary_text = str(summary_data.get("summary_text") or "").strip()
+            if not summary_text and summary_row:
+                summary_text = str(summary_row.get("summary_text") or "").strip()
+            if summary_text:
+                context_parts.append(f"Memory summary:\n{summary_text[:800]}")
+
+            _append_bullets(
+                context_parts,
+                "User preferences:",
+                _list_items(summary_data.get("preferences"), limit=8),
+            )
+            _append_bullets(
+                context_parts,
+                "Recent context:",
+                _list_items(summary_data.get("important_facts"), limit=5),
+            )
+            _append_bullets(
+                context_parts,
+                "Cart/order context:",
+                _list_items(summary_data.get("cart_order_context"), limit=5),
+            )
+            _append_bullets(
+                context_parts,
+                "Unresolved questions:",
+                _list_items(summary_data.get("unresolved_questions"), limit=3),
+            )
+
+        recent_messages = await memory.get_memory(
+            exclude_mark=COMPRESSED_MARK,
+            prepend_summary=False,
+        )
+        visible_recent = [
+            msg for msg in recent_messages[-6:]
+            if getattr(msg, "role", None) in {"user", "assistant"}
+        ][-4:]
+        if visible_recent:
+            context_parts.append("Recent conversation:")
+            for msg in visible_recent:
+                role = "Customer" if msg.role == "user" else "Assistant"
+                content = _message_text(msg)
+                if len(content) > 200:
+                    content = f"{content[:197]}..."
+                context_parts.append(f"- {role}: {content}")
+
+    except Exception as e:
+        logger.warning(
+            "[%s] Failed to build specialist context: %s",
+            session_id,
+            e,
+            exc_info=True,
+        )
+
+    context_parts.append(
+        "Specialist instruction: Use the context only when relevant. "
+        "Personalize the answer and filter by stated preferences, budgets, "
+        "dietary needs, and exclusions when applicable. Keep tool output and "
+        "retrieved knowledge as the source of truth; do not invent menu, cart, "
+        "order, or policy facts."
+    )
+    return "\n\n".join(part for part in context_parts if part.strip())
 
 
 def _is_short_confirmation(text: str) -> bool:
@@ -110,6 +244,16 @@ def _extract_reply_text(reply) -> str:
     if isinstance(content, str):
         return content
     return _extract_text_blocks(content)
+
+
+def _tool_response_text(response: ToolResponse) -> str:
+    content = getattr(response, "content", None) or []
+    if not content:
+        return ""
+    block = content[0]
+    if isinstance(block, dict):
+        return str(block.get("text", ""))
+    return str(getattr(block, "text", "") or "")
 
 
 def _extract_final_answer_data(text: str) -> str | None:
@@ -187,6 +331,24 @@ async def _ask(agent, query: str) -> ToolResponse:
     return ToolResponse(content=[TextBlock(type="text", text=text or str(reply))])
 
 
+async def _ask_cached(
+    agent_type: str,
+    label: str,
+    query: str,
+) -> ToolResponse:
+    start = time.perf_counter()
+    async with acquire_cached_agent(agent_type) as agent:
+        agent_get_ms = (time.perf_counter() - start) * 1000
+        session_id = _CURRENT_SESSION_ID.get() or "unknown"
+        logger.info(
+            "[%s] Got %s from cache in %.1fms",
+            session_id,
+            label,
+            agent_get_ms,
+        )
+        return await _ask(agent, query)
+
+
 async def ask_product_agent(query: str) -> ToolResponse:
     """Delegate a menu/product question to the Product Search specialist.
 
@@ -203,10 +365,24 @@ async def ask_product_agent(query: str) -> ToolResponse:
     Example:
         ask_product_agent(query="What hot drinks under ₹100 do you have?")
     """
-    query_token = set_current_product_query(_current_product_tool_query(query))
-    session_token = set_current_product_session_id(_CURRENT_SESSION_ID.get())
+    session_id = _CURRENT_SESSION_ID.get() or "unknown"
+    user_id = _CURRENT_USER_ID.get()
+    product_query = _current_product_tool_query(query)
+    enriched_query = await _build_specialist_context(
+        session_id=session_id,
+        user_id=user_id,
+        base_query=product_query,
+    )
+    logger.info(
+        "[%s] Enriched ProductSearchAgent query:\n%s...",
+        session_id,
+        enriched_query[:300],
+    )
+
+    query_token = set_current_product_query(product_query)
+    session_token = set_current_product_session_id(session_id)
     try:
-        return await _ask(make_product_search_agent(), query)
+        return await _ask_cached("product", "ProductSearchAgent", enriched_query)
     finally:
         reset_current_product_query(query_token)
         reset_current_product_session_id(session_token)
@@ -225,7 +401,18 @@ async def ask_cart_agent(query: str) -> ToolResponse:
     Example:
         ask_cart_agent(query="[session_id=s1] Show my cart")
     """
-    return await _ask(make_cart_management_agent(), query)
+    session_id = _CURRENT_SESSION_ID.get() or "unknown"
+    enriched_query = await _build_specialist_context(
+        session_id=session_id,
+        user_id=_CURRENT_USER_ID.get(),
+        base_query=query,
+    )
+    logger.info(
+        "[%s] Enriched CartManagementAgent query:\n%s...",
+        session_id,
+        enriched_query[:300],
+    )
+    return await _ask_cached("cart", "CartManagementAgent", enriched_query)
 
 
 async def ask_order_agent(query: str) -> ToolResponse:
@@ -241,7 +428,18 @@ async def ask_order_agent(query: str) -> ToolResponse:
     Example:
         ask_order_agent(query="[session_id=s1] Place the order, budget ₹300")
     """
-    return await _ask(make_order_management_agent(), query)
+    session_id = _CURRENT_SESSION_ID.get() or "unknown"
+    enriched_query = await _build_specialist_context(
+        session_id=session_id,
+        user_id=_CURRENT_USER_ID.get(),
+        base_query=query,
+    )
+    logger.info(
+        "[%s] Enriched OrderManagementAgent query:\n%s...",
+        session_id,
+        enriched_query[:300],
+    )
+    return await _ask_cached("order", "OrderManagementAgent", enriched_query)
 
 
 async def ask_support_agent(query: str) -> ToolResponse:
@@ -257,9 +455,106 @@ async def ask_support_agent(query: str) -> ToolResponse:
     Example:
         ask_support_agent(query="What are your hours?")
     """
-    return await _ask(make_customer_support_agent(), query)
+    session_id = _CURRENT_SESSION_ID.get() or "unknown"
+    enriched_query = await _build_specialist_context(
+        session_id=session_id,
+        user_id=_CURRENT_USER_ID.get(),
+        base_query=query,
+    )
+    logger.info(
+        "[%s] Enriched CustomerSupportAgent query:\n%s...",
+        session_id,
+        enriched_query[:300],
+    )
+    return await _ask_cached("support", "CustomerSupportAgent", enriched_query)
+
+
+async def ask_multiple_specialists(
+    queries: list[dict[str, str]],
+) -> ToolResponse:
+    """Call multiple independent specialists in parallel.
+
+    Args:
+        queries: Items with `type` ("product", "cart", "order", "support")
+            and `query` fields. Use only for independent work.
+
+    Returns:
+        Combined specialist responses with clear labels.
+    """
+    session_id = _CURRENT_SESSION_ID.get() or "unknown"
+    if isinstance(queries, str):
+        try:
+            parsed = json.loads(queries)
+        except json.JSONDecodeError:
+            parsed = []
+        queries = parsed if isinstance(parsed, list) else []
+
+    specialist_map = {
+        "product": ask_product_agent,
+        "cart": ask_cart_agent,
+        "order": ask_order_agent,
+        "support": ask_support_agent,
+    }
+
+    scheduled: list[tuple[SpecialistType, str]] = []
+    tasks = []
+    for item in queries or []:
+        if not isinstance(item, dict):
+            continue
+        spec_type = str(item.get("type", "")).strip().lower()
+        query = str(item.get("query", "")).strip()
+        if spec_type not in specialist_map:
+            logger.warning("[%s] Unknown specialist type: %s", session_id, spec_type)
+            continue
+        if not query:
+            logger.warning("[%s] Empty query for specialist type: %s", session_id, spec_type)
+            continue
+
+        scheduled.append((spec_type, query))  # type: ignore[arg-type]
+        tasks.append(specialist_map[spec_type](query))
+
+    if not tasks:
+        return ToolResponse(
+            content=[TextBlock(type="text", text="No valid specialist queries were provided.")]
+        )
+
+    logger.info(
+        "[%s] Running %d specialists in parallel: %s",
+        session_id,
+        len(tasks),
+        [spec_type for spec_type, _ in scheduled],
+    )
+    start = time.perf_counter()
+    results = await asyncio.gather(*tasks, return_exceptions=True)
+    elapsed_ms = (time.perf_counter() - start) * 1000
+    logger.info(
+        "[%s] Completed %d specialists in parallel in %.1fms",
+        session_id,
+        len(tasks),
+        elapsed_ms,
+    )
+
+    combined_text = []
+    for (spec_type, query), result in zip(scheduled, results, strict=False):
+        label = spec_type.upper()
+        if isinstance(result, Exception):
+            logger.error(
+                "[%s] %s specialist failed in parallel batch",
+                session_id,
+                label,
+                exc_info=(type(result), result, result.__traceback__),
+            )
+            combined_text.append(f"[{label} ERROR]: {result}")
+            continue
+
+        text = _tool_response_text(result).strip()
+        combined_text.append(
+            f"[{label} RESPONSE]\nQuery: {query}\n{text or '(empty response)'}"
+        )
+
+    return ToolResponse(content=[TextBlock(type="text", text="\n\n".join(combined_text))])
 
 
 def reset_specialists() -> None:
     """For tests."""
-    _AGENTS.clear()
+    clear_agent_cache_memories()

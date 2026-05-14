@@ -440,7 +440,8 @@ DASHBOARD_HTML = """
     const resetSessionEl = document.getElementById("reset-session");
     const resetEl = document.getElementById("reset");
     const sessionLabelEl = document.getElementById("session-label");
-    let currentSessionId = localStorage.getItem("milo_debug_session_id") || "";
+    let currentSessionId = "";
+    let sessionPromise = null;
     let latestState = null;
 
     const descriptions = {
@@ -572,14 +573,18 @@ DASHBOARD_HTML = """
       const res = await fetch("/sessions", { method: "POST" });
       const data = await res.json();
       currentSessionId = data.session_id;
-      localStorage.setItem("milo_debug_session_id", currentSessionId);
       renderSessionLabel();
       return currentSessionId;
     }
 
     async function ensureSession() {
       if (currentSessionId) return currentSessionId;
-      return createSession();
+      if (!sessionPromise) {
+        sessionPromise = createSession().finally(() => {
+          sessionPromise = null;
+        });
+      }
+      return sessionPromise;
     }
 
     formEl.addEventListener("submit", async event => {
@@ -625,9 +630,9 @@ DASHBOARD_HTML = """
     resetEl.addEventListener("click", async () => {
       await fetch("/admin/reset", { method: "POST" });
       currentSessionId = "";
-      localStorage.removeItem("milo_debug_session_id");
       renderSessionLabel();
       chatLogEl.innerHTML = "";
+      await ensureSession();
       await poll();
     });
 
@@ -650,6 +655,10 @@ DASHBOARD_HTML = """
 
     window.addEventListener("resize", () => latestState && renderFlow(latestState));
     renderSessionLabel();
+    ensureSession().catch(error => {
+      statusEl.textContent = "session error";
+      console.error(error);
+    });
     poll();
   </script>
 </body>

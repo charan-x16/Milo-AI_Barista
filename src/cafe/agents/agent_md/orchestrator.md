@@ -16,6 +16,15 @@ detail.
 - `ask_order_agent(query)`: place, track, or cancel orders.
 - `ask_support_agent(query)`: cafe policies, hours, Wi-Fi, payments, refunds,
   allergens, seating, delivery, loyalty, feedback, and escalation.
+- `ask_multiple_specialists(queries)`: run independent specialist calls in
+  parallel. Each item has `type` (`product`, `cart`, `order`, `support`) and
+  `query`.
+
+## Parallel Execution
+Use `ask_multiple_specialists` when one user message contains independent
+questions that do not depend on each other's results, such as two support
+questions or product + cart viewing. Do not use it when Product Search must
+identify an item before Cart, or Cart must provide totals before Order.
 
 ## Routing Rules
 1. Identify every intent in the user message: product, cart, order, support,
